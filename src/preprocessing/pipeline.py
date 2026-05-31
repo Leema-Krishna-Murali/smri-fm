@@ -11,6 +11,7 @@ from pathlib import Path
 import ants
 import nibabel as nib
 import numpy as np
+import templateflow.api as tflow
 
 log = logging.getLogger("preprocess")
 
@@ -30,12 +31,26 @@ def setup_logging(log_file: Path) -> None:
     )
 
 
-def scan_stem(input_path: Path) -> str:
-    return input_path.name.removesuffix(".nii.gz")
+def _safe_stem_part(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "."} else "_" for ch in value)
+
+
+def scan_stem(input_path: Path, input_dir: Path | None = None) -> str:
+    stem = input_path.name.removesuffix(".nii.gz")
+    if input_dir is None:
+        return stem
+    try:
+        rel = input_path.relative_to(input_dir)
+    except ValueError:
+        return stem
+    parts = rel.parts
+    if len(parts) > 1 and parts[0].startswith("ds"):
+        return f"{_safe_stem_part(parts[0])}_{stem}"
+    return stem
 
 
 def output_paths(input_path: Path, input_dir: Path) -> tuple[Path, Path, Path]:
-    stem = input_path.name.removesuffix(".nii.gz")
+    stem = scan_stem(input_path, input_dir)
     processed_dir = input_dir / "processed"
     mask_dir = input_dir / "derivatives" / "masks"
     xfm_dir = input_dir / "derivatives" / "transforms"
@@ -48,7 +63,7 @@ def output_paths(input_path: Path, input_dir: Path) -> tuple[Path, Path, Path]:
 
 
 def synthseg_output_paths(input_path: Path, input_dir: Path) -> tuple[Path, Path, Path]:
-    stem = scan_stem(input_path)
+    stem = scan_stem(input_path, input_dir)
     d = input_dir / "derivatives" / "synthseg"
     d.mkdir(parents=True, exist_ok=True)
     seg = d / f"{stem}_desc-synthseg_dseg.nii.gz"
@@ -84,10 +99,10 @@ def save_brain_mask_from_segmentation(seg_path: Path, mask_path: Path) -> None:
 
 def rigid_register_to_template(
     img: nib.Nifti1Image,
-    template_brain_path: Path,
+    template_path: Path,
     transform_path: Path,
 ) -> nib.Nifti1Image:
-    fixed = ants.image_read(str(template_brain_path))
+    fixed = ants.image_read(str(template_path))
     moving = nib_to_ants(img)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -114,13 +129,6 @@ def rigid_register_to_template(
         shutil.copy2(rigid_transform, transform_path)
 
     return ants_to_nib(registered)
-
-
-def _default_template_brain() -> Path:
-    import templateflow.api as tflow
-    return Path(str(tflow.get(
-        TEMPLATE_SPACE, resolution=1, desc="brain", suffix="T1w", extension=".nii.gz"
-    )))
 
 
 def run_synthseg(
@@ -165,7 +173,7 @@ def run_synthseg(
         )
 
 
-def process_file(input_path: Path, input_dir: Path, template_brain_path: Path) -> bool:
+def process_file(input_path: Path, input_dir: Path, template_path: Path) -> bool:
     name = str(input_path.relative_to(input_dir))
     processed_path, _, xfm_path = output_paths(input_path, input_dir)
 
@@ -173,10 +181,10 @@ def process_file(input_path: Path, input_dir: Path, template_brain_path: Path) -
         log.info("%s — already registered, skipping", name)
         return True
 
-    log.info("%s — rigid registration to %s", name, TEMPLATE_SPACE)
+    log.info("%s — rigid registration to %s using %s", name, TEMPLATE_SPACE, template_path.name)
     try:
         img = nib.load(input_path)
-        registered = rigid_register_to_template(img, template_brain_path, xfm_path)
+        registered = rigid_register_to_template(img, template_path, xfm_path)
         nib.save(registered, processed_path)
         log.info("%s — done → %s", name, processed_path.name)
         return True
@@ -255,10 +263,6 @@ def main() -> None:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--log-dir", type=Path)
     parser.add_argument("--log-file", type=Path)
-    parser.add_argument(
-        "--template-brain", default=None, type=Path, dest="template_brain",
-        help="Template brain image for rigid registration (defaults to MNI152NLin2009cAsym res-1 via templateflow).",
-    )
     parser.add_argument("--itk-threads", default=2, type=int)
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--synthseg-threads", default=8, type=int)
@@ -268,12 +272,16 @@ def main() -> None:
 
     input_dir = args.input.resolve()
     log_dir = (args.log_dir or input_dir / "logs").resolve()
-    template_brain = (args.template_brain or _default_template_brain()).resolve()
+
+    t1_template = Path(str(tflow.get(
+        TEMPLATE_SPACE, resolution=1, desc="brain", suffix="T1w", extension=".nii.gz"
+    ))).resolve()
+    t2_template = Path(str(tflow.get(
+        TEMPLATE_SPACE, resolution=1, suffix="T2w", extension=".nii.gz"
+    ))).resolve()
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory not found: {input_dir}")
-    if not template_brain.exists():
-        raise FileNotFoundError(f"Template brain not found: {template_brain}")
     log_dir.mkdir(parents=True, exist_ok=True)
 
     log_file = (args.log_file.resolve() if args.log_file else log_dir / "run.log")
@@ -284,7 +292,8 @@ def main() -> None:
     log.info("Input: %s", input_dir)
     log.info("Processed: %s", input_dir / "processed")
     log.info("SynthSeg: %s", input_dir / "derivatives" / "synthseg")
-    log.info("Template brain: %s", template_brain)
+    log.info("T1 template: %s", t1_template)
+    log.info("T2 template: %s", t2_template)
     log.info("SynthSeg command: %s", DEFAULT_SYNTHSEG_CMD)
 
     excluded = {input_dir / "processed", input_dir / "derivatives", input_dir / "logs"}
@@ -313,7 +322,9 @@ def main() -> None:
     reg_failed = []
     synthseg_tasks = []
     for f in files:
-        if process_file(f, input_dir, template_brain):
+        modality = scan_stem(f).rsplit("_", 1)[-1].lower()
+        template_path = t2_template if modality in {"t2w", "flair"} else t1_template
+        if process_file(f, input_dir, template_path):
             processed_path, mask_path, _ = output_paths(f, input_dir)
             seg_path, vol_path, qc_path = synthseg_output_paths(f, input_dir)
             synthseg_tasks.append((f, processed_path, seg_path, vol_path, qc_path, mask_path))
