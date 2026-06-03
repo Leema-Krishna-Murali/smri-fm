@@ -269,12 +269,11 @@ def train_one_epoch(
     for batch_idx, batch in enumerate(
         metric_logger.log_every(data_loader, print_freq, header, total_steps=num_batches)
     ):
-        log_step = batch_idx % print_freq == 0 or batch_idx == num_batches - 1
-
         if use_cuda and not args.presend_cuda:
             batch = ut.send_data(batch, device, dtype_map={torch.float16: amp_dtype})
 
         batch_step = batch_idx + 1
+        log_step = batch_step % print_freq == 0 or batch_step == num_batches
         global_step = epoch * steps_per_epoch + batch_step // args.accum_iter
         lr = lr_schedule[global_step]
         need_update = batch_step % args.accum_iter == 0
@@ -299,7 +298,13 @@ def train_one_epoch(
             )
 
         if log_step:
-            loss_value = loss.item()
+            loss_for_log = loss.detach()
+            if args.distributed:
+                loss_for_log = loss_for_log.clone()
+                torch.distributed.all_reduce(loss_for_log)
+                loss_for_log /= ut.get_world_size()
+
+            loss_value = loss_for_log.item()
             if not math.isfinite(loss_value):
                 raise RuntimeError(f"Loss is {loss_value}, stopping training")
 
@@ -348,7 +353,8 @@ def evaluate(
 
     metric_logger = ut.MetricLogger(delimiter="  ")
     header = f"Eval ({eval_name}): [{epoch}]"
-    log_wandb = args.wandb and ut.is_main_process()
+    is_master = ut.is_main_process()
+    log_wandb = args.wandb and is_master
 
     epoch_num_batches = len(data_loader)
     if epoch_num_batches <= 0:
@@ -388,7 +394,7 @@ def evaluate(
 
         metric_logger.update(loss=loss)
 
-        if batch_step == example_step:
+        if is_master and batch_step == example_step:
             example_batch = {**batch, "image": images, "img_mask": img_mask}
             example_data = {
                 "batch": ut.send_data(example_batch, "cpu"),
@@ -400,9 +406,11 @@ def evaluate(
     print(f"Averaged stats ({eval_name}):", metric_logger)
     stats = {f"eval/{eval_name}/{k}": meter.global_avg for k, meter in metric_logger.meters.items()}
 
-    print(f"Making plots ({eval_name}): example={example_step}")
-    plots = make_plots(args, **example_data)
-    plots = {f"eval/{eval_name}/{k}": img for k, img in plots.items()}
+    plots = {}
+    if is_master:
+        print(f"Making plots ({eval_name}): example={example_step}")
+        plots = make_plots(args, **example_data)
+        plots = {f"eval/{eval_name}/{k}": img for k, img in plots.items()}
 
     if log_wandb:
         wandb.log(stats, step=1000 * (epoch + 1))
