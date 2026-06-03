@@ -155,17 +155,19 @@ def main(args: DictConfig):
         )
         eval_stats = {}
         eval_plots = {}
-        for name, loader in eval_loaders.items():
-            stats, plots = evaluate(
-                args,
-                model,
-                loader,
+        eval_period = args.get("eval_period", 1)
+        if eval_period and (epoch % eval_period == 0 or epoch == args.epochs - 1):
+            for name, loader in eval_loaders.items():
+                stats, plots = evaluate(
+                    args,
+                    model,
+                    loader,
                     epoch,
                     device,
                     eval_name=name,
                 )
-            eval_stats.update(stats)
-            eval_plots.update(plots)
+                eval_stats.update(stats)
+                eval_plots.update(plots)
 
         merged_stats = {"epoch": epoch, **train_stats, **eval_stats}
         if is_master:
