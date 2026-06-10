@@ -1,7 +1,6 @@
 # Evaluation
 
-Internal evaluation and fine-tuning suite for probing frozen sMRI
-representations.
+Internal evaluation and fine-tuning suite.
 
 The package is intentionally small and registry-based. A YAML config selects:
 
