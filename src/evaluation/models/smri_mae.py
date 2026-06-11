@@ -62,13 +62,11 @@ class SmriMaeBackbone(nn.Module):
 def load_smri_mae_checkpoint(model: nn.Module, checkpoint_path: str | Path) -> None:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = checkpoint.get("model", checkpoint)
-    
+
     # Use only encoder weights
     prefix = "encoder."
     state_dict = {
-        key[len(prefix) :]: value
-        for key, value in state_dict.items()
-        if key.startswith(prefix)
+        key[len(prefix) :]: value for key, value in state_dict.items() if key.startswith(prefix)
     }
 
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
