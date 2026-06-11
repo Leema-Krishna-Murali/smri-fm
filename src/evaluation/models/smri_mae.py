@@ -1,108 +1,120 @@
-from collections.abc import Callable, Mapping
-from pathlib import Path
-from typing import Any
+from typing import Literal
 
+import nibabel as nib
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 
-from smri_mae.model_mae import MaskedViT
+from evaluation.models.registry import register_model
+
+import smri_mae.model_mae as models_mae
 
 
 class SmriMaeBackbone(nn.Module):
     def __init__(
         self,
-        *,
-        use_input_mask: bool = False,
-        calculate_mask: str | None = None,
-        **kwargs: Any,
+        encoder: models_mae.MaskedEncoder,
+        global_pool: Literal["cls", "reg", "patch"] = "patch",
     ):
         super().__init__()
-        if calculate_mask not in {None, "mean"}:
-            raise ValueError(
-                f"calculate_mask must be one of None or 'mean', got {calculate_mask!r}"
-            )
-        if use_input_mask and calculate_mask is not None:
-            raise ValueError("use_input_mask and calculate_mask cannot both be enabled")
-        self.use_input_mask = bool(use_input_mask)
-        self.calculate_mask = calculate_mask
-        self.model = MaskedViT(**kwargs)
-        self.embed_dim = self.model.patch_embed.out_features
+        self.encoder = encoder
+        self.global_pool = global_pool
 
-    def _resolve_mask(self, images: Tensor, mask: Tensor | None) -> Tensor | None:
-        """Return the mask to pass into the MAE embedding forward pass.
+    def forward(self, batch: dict[str, Tensor]) -> Tensor:
+        images = batch["image"]
+        mask = batch["mask"]
 
-        The mask can either be supplied by the caller, derived from the image
-        intensities, or omitted entirely depending on the backbone configuration.
+        cls, reg, patch = self.encoder.forward_embedding(images, mask=mask)
+
+        if self.global_pool == "cls":
+            embed = cls[:, 0, :]
+        elif self.global_pool == "reg":
+            embed = reg.mean(dim=1)
+        elif self.global_pool == "patch":
+            embed = patch.mean(dim=1)
+        return embed
+
+
+class SmriMaeTransform:
+    def __init__(
+        self,
+        img_size: tuple[int, int, int],
+        spacing: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    ):
+        self.img_size = img_size
+        self.spacing = spacing
+
+    def __call__(self, img: nib.Nifti1Image) -> dict[str, Tensor]:
         """
-        # Use the caller-provided mask when the evaluation config requires it.
-        if self.use_input_mask:
-            if mask is None:
-                raise ValueError("use_input_mask=True requires a mask input")
-            return mask
-        # Calculate a simple intensity mask only when mask inference is enabled.
-        # This is suboptimal but fine for now.
-        if self.calculate_mask == "mean":
-            dims = tuple(range(1, images.ndim))
-            return images > images.mean(dim=dims, keepdim=True)
-        return None
-
-    def forward(self, images: Tensor, mask: Tensor | None = None) -> dict[str, Tensor | None]:
-        """Encode images and return MAE class, register, and patch embeddings.
-
-        The optional input mask is resolved according to the backbone settings
-        before delegating to the underlying ``MaskedViT`` embedding path.
+        TODO(mihir): check
         """
-        # Check if a mask is necessary before extracting MAE embeddings.
-        mask = self._resolve_mask(images, mask)
-        cls, reg, patch = self.model.forward_embedding(images, mask=mask)
-        return {"cls": cls, "reg": reg, "patch": patch}
+        # reorient to RAS
+        img = nib.as_closest_canonical()
+
+        # note, shape is (X, Y, Z) in contiguous F-order
+        data = img.get_fdata(dtype=np.float32)
+        data = torch.from_numpy(data)
+        spacing = img.header.get_zooms()
+
+        # resize
+        data = rescale(data, spacing, target_spacing=self.spacing)
+
+        # tranpose (X, Y, Z) F-order -> (Z, Y, X) C-order
+        # TODO: this shape issue is a footgun. need to be consistent and obvious about
+        # whether we are doing (X, Y, Z) or (Z, Y, X) for image as well as img_size,
+        # spacing.
+        data = data.T.contiguous()
+        data = pad_to_shape(data, self.img_size)
+
+        # cheap mask
+        mask = data > data.mean()
+
+        # TODO(mihir) normalization?
+
+        sample = {"image": data, "mask": mask}
+        return sample
 
 
-def load_smri_mae_checkpoint(model: nn.Module, checkpoint_path: str | Path) -> None:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    state_dict = checkpoint.get("model", checkpoint)
-
-    # Use only encoder weights
-    prefix = "encoder."
-    state_dict = {
-        key[len(prefix) :]: value for key, value in state_dict.items() if key.startswith(prefix)
-    }
-
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    if unexpected:
-        raise ValueError(f"unexpected checkpoint keys: {unexpected}")
+# can copy these utils to shared module if they prove generally useful
 
 
-def _build_smri_mae_backbone(cfg: Mapping[str, Any]) -> nn.Module:
-    kwargs = {
-        "img_size": cfg["img_size"],
-        "patch_size": cfg["patch_size"],
-        "in_chans": cfg.get("in_chans", 1),
-        "use_input_mask": bool(cfg.get("use_input_mask", False)),
-        "calculate_mask": cfg.get("calculate_mask"),
-        **dict(cfg.get("model_kwargs") or {}),
-    }
-    backbone = SmriMaeBackbone(**kwargs)
-    if cfg.get("checkpoint_path"):
-        load_smri_mae_checkpoint(backbone.model, cfg["checkpoint_path"])
-    return backbone
+def rescale(
+    x: torch.Tensor,
+    spacing: tuple[float, ...],
+    target_spacing: tuple[float, ...] = (1.0, 1.0, 1.0),
+):
+    scales = tuple([current / target for current, target in zip(spacing, target_spacing)])
+    x = F.interpolate(x[None, None], scale_factor=scales, mode="trilinear").squeeze(0, 1)
+    return x
 
 
-_BACKBONE_BUILDERS: dict[str, Callable[[Mapping[str, Any]], nn.Module]] = {
-    "smri_mae": _build_smri_mae_backbone,
-}
+def pad_to_shape(x: torch.Tensor, target_shape: tuple[int, ...]):
+    # nb this also crops
+    padding = []
+    for s, s_ in reversed(list(zip(x.shape, target_shape))):
+        pad = s_ - s
+        padding.extend([pad // 2, pad - pad // 2])
+    x = F.pad(x, padding)
+    return x
 
 
-def list_backbones() -> list[str]:
-    return sorted(_BACKBONE_BUILDERS)
+@register_model
+def smri_mae(ckpt_path: str, global_pool: str = "patch"):
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    args = ckpt["args"]
 
+    model_fn = models_mae.__dict__[args["model"]]
+    model: models_mae.MaskedAutoencoderViT = model_fn(
+        img_size=args["img_size"],
+        in_chans=args.get("in_chans", 1),
+        patch_size=args["patch_size"],
+        **(args.get("model_kwargs") or {}),
+    )
+    model.load_state_dict(ckpt["model"])
 
-def build_backbone(cfg: Mapping[str, Any]):
-    name = cfg.get("name")
-    try:
-        builder = _BACKBONE_BUILDERS[name]
-    except KeyError:
-        available = ", ".join(list_backbones())
-        raise ValueError(f"unknown backbone {name!r}. available backbones: {available}") from None
-    return builder(cfg)
+    backbone = SmriMaeBackbone(model.encoder, global_pool=global_pool)
+    transform = SmriMaeTransform(img_size=args["img_size"])
+
+    return backbone, transform
