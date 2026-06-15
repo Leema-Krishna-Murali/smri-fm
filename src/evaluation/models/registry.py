@@ -50,9 +50,9 @@ def import_model_plugins():
     # https://packaging.python.org/en/latest/guides/creating-and-discovering-plugins/#using-namespace-packages
     plugins = {}
     for finder, name, ispkg in pkgutil.iter_modules(evaluation.models.__path__):
-        if not (name in {"base", "registry", "template"} or name.startswith("test_")):
+        if not (name in {"base", "registry"} or name.startswith("test_")):
             try:
-                plugins[name] = importlib.import_module(f"evalutation.models.{name}")
+                plugins[name] = importlib.import_module(f"evaluation.models.{name}")
             except Exception as exc:
                 _logger.warning(f"Import model plugin {name} failed: {exc}")
     return plugins

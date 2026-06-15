@@ -51,7 +51,7 @@ class SmriMaeTransform:
         TODO(mihir): check
         """
         # reorient to RAS
-        img = nib.as_closest_canonical()
+        img = nib.as_closest_canonical(img)
 
         # note, shape is (X, Y, Z) in contiguous F-order
         data = img.get_fdata(dtype=np.float32)
