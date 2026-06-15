@@ -254,9 +254,16 @@ def is_main_process():
     return get_rank() == 0
 
 
-def save_on_master(*args, **kwargs):
+def save_on_master(obj, path, *args, **kwargs):
     if is_main_process():
-        torch.save(*args, **kwargs)
+        path = Path(path)
+        tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+        try:
+            torch.save(obj, tmp_path, *args, **kwargs)
+            os.replace(tmp_path, path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
 
 def init_distributed_mode(args):
@@ -290,6 +297,8 @@ def save_model(args, epoch, model_without_ddp, optimizer, loss_scaler):
     output_dir = Path(args.output_dir)
     checkpoint_path = output_dir / f"checkpoint-{epoch:05d}.pth"
     last_checkpoint_path = output_dir / "checkpoint-last.pth"
+    if epoch % args.checkpoint_period != 0 and epoch != args.epochs - 1:
+        return
 
     to_save = {
         "model": model_without_ddp.state_dict(),
@@ -301,9 +310,8 @@ def save_model(args, epoch, model_without_ddp, optimizer, loss_scaler):
 
     print(f"saving checkpoint {last_checkpoint_path}")
     save_on_master(to_save, last_checkpoint_path)
-    if args.checkpoint_period and epoch % args.checkpoint_period == 0:
-        print(f"saving checkpoint {checkpoint_path}")
-        save_on_master(to_save, checkpoint_path)
+    print(f"saving checkpoint {checkpoint_path}")
+    save_on_master(to_save, checkpoint_path)
 
     if args.max_checkpoints and is_main_process():
         all_checkpoints = sorted(output_dir.glob("checkpoint-[0-9]*.pth"))
