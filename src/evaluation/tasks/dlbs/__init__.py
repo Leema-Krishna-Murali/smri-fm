@@ -13,7 +13,6 @@ def dlbs_age(n_splits: int = 5, seed: int = 0) -> ColumnTask:
         data=create_dlbs_t1w(),
         splitter=KFold(n_splits=n_splits, shuffle=True, random_state=seed),
         target_column="AgeMRI_W1",
-        id_column="participant_id",
     )
 
 
@@ -25,5 +24,4 @@ def dlbs_sex(n_splits: int = 5, seed: int = 0) -> ColumnTask:
         data=create_dlbs_t1w(),
         splitter=StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed),
         target_column="Sex",
-        id_column="participant_id",
     )

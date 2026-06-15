@@ -47,14 +47,13 @@ class TransformDataset(Dataset):
 
     def __getitem__(self, index: int):
         sample = self.dataset[index]
-        return self.transform(sample["image"]), sample["target"], sample["id"]
+        return self.transform(sample["image"]), sample["target"]
 
 
 def collate_samples(batch):
     inputs = default_collate([item[0] for item in batch])
     targets = [item[1] for item in batch]
-    ids = [item[2] for item in batch]
-    return inputs, targets, ids
+    return inputs, targets
 
 
 def to_device(batch: dict, device: torch.device) -> dict:
@@ -69,7 +68,7 @@ def extract_features(
     device: torch.device,
     batch_size: int,
     num_workers: int,
-) -> tuple[np.ndarray, np.ndarray, list[str]]:
+) -> tuple[np.ndarray, np.ndarray]:
     loader = DataLoader(
         TransformDataset(dataset, transform),
         batch_size=batch_size,
@@ -79,12 +78,11 @@ def extract_features(
     )
     model.eval().to(device)
 
-    features, targets, ids = [], [], []
-    for inputs, batch_targets, batch_ids in loader:
+    features, targets = [], []
+    for inputs, batch_targets in loader:
         features.append(model(to_device(inputs, device)).cpu().float())
         targets.extend(batch_targets)
-        ids.extend(batch_ids)
-    return torch.cat(features).numpy(), np.asarray(targets), ids
+    return torch.cat(features).numpy(), np.asarray(targets)
 
 
 def run_probe(
@@ -97,7 +95,7 @@ def run_probe(
     num_workers: int,
     seed: int,
 ):
-    X, y, ids = extract_features(model, task.dataset(), transform, device, batch_size, num_workers)
+    X, y = extract_features(model, task.dataset(), transform, device, batch_size, num_workers)
 
     fit = ESTIMATORS[task.kind]
     fold_metrics, predictions = [], []
@@ -107,11 +105,11 @@ def run_probe(
         fold_metrics.append(task.metrics(y[test_idx], pred, test_idx))
         for index, value in zip(test_idx, pred):
             predictions.append(
-                {"fold": fold, "id": ids[index], "target": y[index], "prediction": value}
+                {"fold": fold, "index": int(index), "target": y[index], "prediction": value}
             )
 
     metrics = {"summary": aggregate_folds(fold_metrics), "folds": fold_metrics}
-    features = {"X": X, "y": y, "ids": np.asarray(ids)}
+    features = {"X": X, "y": y}
     return metrics, features, predictions
 
 
@@ -120,7 +118,7 @@ def write_outputs(run_dir: Path, metrics: dict, features: dict, predictions: lis
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
     np.savez(run_dir / "features.npz", **features)
     with (run_dir / "predictions.csv").open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["fold", "id", "target", "prediction"])
+        writer = csv.DictWriter(f, fieldnames=["fold", "index", "target", "prediction"])
         writer.writeheader()
         for row in predictions:
             writer.writerow(row)

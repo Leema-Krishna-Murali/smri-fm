@@ -11,23 +11,19 @@ from evaluation.tasks.metrics import classification_metrics, regression_metrics
 
 
 class ColumnDataset(Dataset):
-    """Adapts HF dataset rows to canonical ``{image, target, id}`` samples."""
+    """Adapts HF dataset rows to canonical ``{image, target}`` samples."""
 
-    def __init__(
-        self, data: HFDataset, image_column: str, target_column: str, id_column: str | None
-    ):
+    def __init__(self, data: HFDataset, image_column: str, target_column: str):
         self.data = data
         self.image_column = image_column
         self.target_column = target_column
-        self.id_column = id_column
 
     def __len__(self) -> int:
         return len(self.data)
 
     def __getitem__(self, index: int) -> dict:
         row = self.data[index]
-        id_ = str(row[self.id_column]) if self.id_column else str(index)
-        return {"image": row[self.image_column], "target": row[self.target_column], "id": id_}
+        return {"image": row[self.image_column], "target": row[self.target_column]}
 
 
 @dataclass
@@ -41,10 +37,9 @@ class ColumnTask:
     image_column: str = "nifti"
     target_column: str = "target"
     group_column: str | None = None
-    id_column: str | None = None
 
     def dataset(self) -> ColumnDataset:
-        return ColumnDataset(self.data, self.image_column, self.target_column, self.id_column)
+        return ColumnDataset(self.data, self.image_column, self.target_column)
 
     def split(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:
         indices = np.arange(len(self.data))

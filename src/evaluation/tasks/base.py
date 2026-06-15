@@ -14,7 +14,7 @@ class Task(Protocol):
     kind: Kind
 
     def dataset(self) -> Dataset:
-        """Indexable dataset of canonical ``{image, target, id}`` samples, in stable order."""
+        """Indexable dataset of canonical ``{image, target}`` samples, in stable order."""
         ...
 
     def split(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:

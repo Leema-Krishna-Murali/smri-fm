@@ -26,13 +26,12 @@ class BrainAgeGapTask:
     control_label: str
     case_label: str
     image_column: str = "nifti"
-    id_column: str | None = None
     test_control_frac: float = 0.2
     seed: int = 0
     kind: Kind = "regression"
 
     def dataset(self) -> ColumnDataset:
-        return ColumnDataset(self.data, self.image_column, self.age_column, self.id_column)
+        return ColumnDataset(self.data, self.image_column, self.age_column)
 
     def split(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:
         dx = np.asarray(self.data[self.diagnosis_column])
