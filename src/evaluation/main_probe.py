@@ -19,6 +19,8 @@ from evaluation.tasks.base import Task
 from evaluation.tasks.metrics import aggregate_folds
 from evaluation.tasks.registry import create_task
 
+DEFAULT_CONFIG = Path(__file__).parent / "config/default_probe.yaml"
+
 
 # Estimators, keyed by task kind. Hyperparameters are selected by inner CV.
 def fit_ridge(X: np.ndarray, y: np.ndarray, seed: int) -> Pipeline:
@@ -130,37 +132,38 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-def main(config_path: str | Path, overrides: list[str] | None = None) -> dict:
-    cfg = OmegaConf.load(config_path)
+def main(config_path: str | Path | None = None, overrides: list[str] | None = None) -> dict:
+    cfg = OmegaConf.load(DEFAULT_CONFIG)
+    if config_path:
+        cfg = OmegaConf.unsafe_merge(cfg, OmegaConf.load(config_path))
     if overrides:
-        cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
-    cfg = OmegaConf.to_container(cfg, resolve=True)
+        cfg = OmegaConf.unsafe_merge(cfg, OmegaConf.from_dotlist(overrides))
 
-    set_seed(int(cfg.get("seed", 0)))
-    task_cfg = dict(cfg["task"])
-    task = create_task(task_cfg.pop("name"), **task_cfg)
-    model_cfg = dict(cfg["model"])
-    model, transform = create_model(model_cfg.pop("name"), **model_cfg)
+    set_seed(cfg.seed)
+    cfg.name = cfg.name or f"{cfg.model}__{cfg.task}"
+
+    task = create_task(cfg.task, **(cfg.task_kwargs or {}))
+    model, transform = create_model(cfg.model, **(cfg.model_kwargs or {}))
 
     metrics, features, predictions = run_probe(
         task,
         model,
         transform,
-        device=torch.device(cfg.get("device", "cpu")),
-        batch_size=int(cfg.get("batch_size", 4)),
-        num_workers=int(cfg.get("num_workers", 0)),
-        seed=int(cfg.get("seed", 0)),
+        device=torch.device(cfg.device),
+        batch_size=cfg.batch_size,
+        num_workers=cfg.num_workers,
+        seed=cfg.seed,
     )
 
-    write_outputs(Path(cfg["output_dir"]) / cfg["name"], metrics, features, predictions)
+    write_outputs(Path(cfg.output_root) / cfg.name, metrics, features, predictions)
     print(json.dumps(metrics["summary"], indent=2))
     return metrics
 
 
 def cli() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
-    parser.add_argument("overrides", nargs="*")
+    parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--overrides", type=str, default=None, nargs="+")
     args = parser.parse_args()
     main(args.config, args.overrides)
 
