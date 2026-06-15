@@ -19,13 +19,3 @@ def classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, 
         "accuracy": float(skm.accuracy_score(y_true, y_pred)),
         "balanced_accuracy": float(skm.balanced_accuracy_score(y_true, y_pred)),
     }
-
-
-def aggregate_folds(fold_metrics: list[dict[str, float]]) -> dict[str, float]:
-    """Mean +/- std across folds, flattened to ``<metric>`` and ``<metric>_std``."""
-    summary = {}
-    for key in fold_metrics[0]:
-        values = np.array([fold[key] for fold in fold_metrics], dtype=np.float64)
-        summary[key] = float(values.mean())
-        summary[f"{key}_std"] = float(values.std())
-    return summary
