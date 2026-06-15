@@ -2,6 +2,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 from datasets import Dataset as HFDataset
 from sklearn.model_selection import BaseCrossValidator
 from torch.utils.data import Dataset
@@ -37,6 +38,12 @@ class ColumnTask:
     image_column: str = "image"
     target_column: str = "target"
     group_column: str | None = None
+
+    def __post_init__(self):
+        targets = np.asarray(self.data[self.target_column])
+        valid = np.where(pd.notna(targets))[0]
+        if len(valid) < len(self.data):
+            self.data = self.data.select(valid)
 
     def dataset(self) -> ColumnDataset:
         return ColumnDataset(self.data, self.image_column, self.target_column)
