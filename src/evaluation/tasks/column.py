@@ -34,7 +34,7 @@ class ColumnTask:
     kind: Kind
     data: HFDataset
     splitter: BaseCrossValidator
-    image_column: str = "nifti"
+    image_column: str = "image"
     target_column: str = "target"
     group_column: str | None = None
 

@@ -8,17 +8,15 @@ Kind = Literal["regression", "classification"]
 
 
 class Task(Protocol):
-    """Thin, declarative wrapper around a dataset: owns data, splits, and scoring."""
-
     name: str
     kind: Kind
 
     def dataset(self) -> Dataset:
-        """Indexable dataset of canonical ``{image, target}`` samples, in stable order."""
+        """Dataset of canonical ``{image, target}`` samples."""
         ...
 
     def split(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:
-        """Yield ``(train_idx, test_idx)`` into dataset order; one pair, or many for outer CV."""
+        """Yield ``(train_idx, test_idx)`` splits; one pair, or many for outer CV."""
         ...
 
     def metrics(

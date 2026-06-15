@@ -22,10 +22,10 @@ class BrainAgeGapTask:
     name: str
     data: HFDataset
     age_column: str
-    diagnosis_column: str
+    dx_column: str
     control_label: str
     case_label: str
-    image_column: str = "nifti"
+    image_column: str = "image"
     test_control_frac: float = 0.2
     seed: int = 0
     kind: Kind = "regression"
@@ -34,26 +34,22 @@ class BrainAgeGapTask:
         return ColumnDataset(self.data, self.image_column, self.age_column)
 
     def split(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:
-        dx = np.asarray(self.data[self.diagnosis_column])
+        dx = np.asarray(self.data[self.dx_column])
         controls = np.where(dx == self.control_label)[0]
         cases = np.where(dx == self.case_label)[0]
 
         # hold out some controls so the test set is leakage-free
-        controls = np.random.default_rng(self.seed).permutation(controls)
+        rng = np.random.default_rng(self.seed)
+        controls = rng.permutation(controls)
         n_test = round(self.test_control_frac * len(controls))
         test_controls, train_controls = controls[:n_test], controls[n_test:]
 
         yield train_controls, np.concatenate([test_controls, cases])
 
     def metrics(self, y_true: np.ndarray, y_pred: np.ndarray, test_idx: np.ndarray) -> dict:
-        gap = np.asarray(y_pred).reshape(-1) - np.asarray(y_true).reshape(-1)
-        dx = np.asarray(self.data[self.diagnosis_column])[test_idx]
+        gap = (y_pred - y_true).reshape(-1)
+        dx = np.asarray(self.data[self.dx_column])[test_idx]
         case_gap = gap[dx == self.case_label]
         control_gap = gap[dx == self.control_label]
         test = stats.ttest_ind(case_gap, control_gap)
-        return {
-            "bag_tstat": float(test.statistic),
-            "bag_pvalue": float(test.pvalue),
-            "gap_case": float(case_gap.mean()),
-            "gap_control": float(control_gap.mean()),
-        }
+        return {"bag_tstat": float(test.statistic)}

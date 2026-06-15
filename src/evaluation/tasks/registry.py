@@ -47,7 +47,7 @@ def import_task_plugins():
     """Finds and imports all modules registering new tasks."""
     plugins = {}
     for finder, name, ispkg in pkgutil.iter_modules(evaluation.tasks.__path__):
-        if not (name in {"base", "registry"} or name.startswith("test_")):
+        if not (name in {"base", "registry", "resources"} or name.startswith("test_")):
             try:
                 plugins[name] = importlib.import_module(f"evaluation.tasks.{name}")
             except Exception as exc:
