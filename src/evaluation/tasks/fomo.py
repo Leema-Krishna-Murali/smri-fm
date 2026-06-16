@@ -21,6 +21,7 @@ def load_fomo_task3() -> Dataset:
             {
                 "participant_id": Value("string"),
                 "age": Value("int32"),
+                "path": Value("string"),
                 "image": Nifti(),
             }
         ),
@@ -39,10 +40,12 @@ def _generate_fomo_task3_samples():
             )
             for sub in subjects:
                 age = int(zf.read(f"Task_3/labels/{sub}/ses-01/labels.txt").strip())
-                image = zf.read(f"Task_3/preprocessed/{sub}/ses-01/t1w.nii.gz")
+                path = f"preprocessed/{sub}/ses-01/t1w.nii.gz"
+                image = zf.read(f"Task_3/{path}")
                 yield {
                     "participant_id": sub,
                     "age": age,
+                    "path": path,
                     "image": {"path": None, "bytes": image},
                 }
 
