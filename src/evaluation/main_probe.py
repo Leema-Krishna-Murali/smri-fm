@@ -4,6 +4,7 @@ import logging
 import random
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -106,8 +107,10 @@ def run_probe(
 ):
     logger.info("extracting features...")
     dataset = task.dataset()
+    start = time.perf_counter()
     X, y = extract_features(model, dataset, transform, device, batch_size, num_workers)
-    logger.info(f"features: {tuple(X.shape)}")
+    tput = len(y) / (time.perf_counter() - start)
+    logger.info(f"features: {tuple(X.shape)} ({tput:.2f} samples/s)")
 
     fit = ESTIMATORS[task.kind]
 
@@ -119,7 +122,7 @@ def run_probe(
         fold_metrics.append(scores)
         logger.info(f"fold {fold}: " + " ".join(f"{k}={v:.4f}" for k, v in scores.items()))
 
-    metrics = {"summary": aggregate_folds(fold_metrics), "folds": fold_metrics}
+    metrics = {"tput": tput, "summary": aggregate_folds(fold_metrics), "folds": fold_metrics}
     return metrics
 
 
@@ -206,7 +209,9 @@ def main(config_path: str | Path | None = None, overrides: list[str] | None = No
     metrics = {"model": cfg.model, "task": cfg.task, **metrics}
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
 
-    summary = pd.DataFrame([{"model": cfg.model, "task": cfg.task, **metrics["summary"]}])
+    summary = pd.DataFrame(
+        [{"model": cfg.model, "task": cfg.task, "tput": metrics["tput"], **metrics["summary"]}]
+    )
     summary.to_csv(run_dir / "summary.csv", index=False)
     logger.info(f"summary:\n\n{summary.to_markdown(index=False, floatfmt='.4f')}")
     return metrics
