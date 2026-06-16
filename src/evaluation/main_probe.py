@@ -1,9 +1,13 @@
 import argparse
 import json
+import logging
 import random
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from omegaconf import OmegaConf
 from sklearn.linear_model import LogisticRegressionCV, RidgeCV
@@ -17,6 +21,8 @@ from evaluation.tasks.base import Task
 from evaluation.tasks.registry import create_task
 
 DEFAULT_CONFIG = Path(__file__).parent / "config/default_probe.yaml"
+
+logger = logging.getLogger(__name__)
 
 
 # Estimators, keyed by task kind. Hyperparameters are selected by inner CV.
@@ -98,16 +104,20 @@ def run_probe(
     num_workers: int,
     seed: int,
 ):
+    logger.info("extracting features...")
     dataset = task.dataset()
     X, y = extract_features(model, dataset, transform, device, batch_size, num_workers)
+    logger.info(f"features: {tuple(X.shape)}")
 
     fit = ESTIMATORS[task.kind]
 
     fold_metrics = []
-    for train_idx, test_idx in task.split():
+    for fold, (train_idx, test_idx) in enumerate(task.split()):
         estimator = fit(X[train_idx], y[train_idx], seed)
         pred = estimator.predict(X[test_idx])
-        fold_metrics.append(task.metrics(y[test_idx], pred, test_idx))
+        scores = task.metrics(y[test_idx], pred, test_idx)
+        fold_metrics.append(scores)
+        logger.info(f"fold {fold}: " + " ".join(f"{k}={v:.4f}" for k, v in scores.items()))
 
     metrics = {"summary": aggregate_folds(fold_metrics), "folds": fold_metrics}
     return metrics
@@ -128,6 +138,32 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
+def setup_logging(run_dir: Path) -> None:
+    handlers = [logging.StreamHandler(sys.stdout), logging.FileHandler(run_dir / "log.txt")]
+    formatter = logging.Formatter("%(message)s")
+
+    root = logging.getLogger("evaluation")
+    root.setLevel(logging.INFO)
+    root.handlers.clear()
+    for handler in handlers:
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
+    root.propagate = False
+
+
+def git_sha() -> str:
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).parent,
+            capture_output=True,
+            text=True,
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
 def main(config_path: str | Path | None = None, overrides: list[str] | None = None) -> dict:
     cfg = OmegaConf.load(DEFAULT_CONFIG)
     if config_path:
@@ -138,11 +174,24 @@ def main(config_path: str | Path | None = None, overrides: list[str] | None = No
     set_seed(cfg.seed)
     cfg.name = cfg.name or f"{cfg.model}__{cfg.task}"
 
+    run_dir = Path(cfg.output_root) / cfg.name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging(run_dir)
+
+    logger.info(f"run: {cfg.name}")
+    logger.info(f"git sha: {git_sha()}")
+    logger.info(f"config:\n{OmegaConf.to_yaml(cfg).rstrip()}")
+    OmegaConf.save(cfg, run_dir / "config.yaml")
+
     device = torch.device(cfg.device)
 
     task = create_task(cfg.task, **(cfg.task_kwargs or {}))
     model, transform = create_model(cfg.model, **(cfg.model_kwargs or {}))
     model.to(device)
+
+    logger.info(f"task: {cfg.task} ({task.kind})")
+    logger.info(f"model: {cfg.model}")
+    logger.info(f"dataset: {len(task.dataset())} samples")
 
     metrics = run_probe(
         task,
@@ -154,11 +203,12 @@ def main(config_path: str | Path | None = None, overrides: list[str] | None = No
         seed=cfg.seed,
     )
 
-    run_dir = Path(cfg.output_root) / cfg.name
-    run_dir.mkdir(parents=True, exist_ok=True)
-    with (run_dir / "metrics.json").open("w") as f:
-        print(json.dumps(metrics), file=f)
-    print(json.dumps(metrics["summary"], indent=2))
+    metrics = {"model": cfg.model, "task": cfg.task, **metrics}
+    (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
+
+    summary = pd.DataFrame([{"model": cfg.model, "task": cfg.task, **metrics["summary"]}])
+    summary.to_csv(run_dir / "summary.csv", index=False)
+    logger.info(f"summary:\n\n{summary.to_markdown(index=False, floatfmt='.4f')}")
     return metrics
 
 
