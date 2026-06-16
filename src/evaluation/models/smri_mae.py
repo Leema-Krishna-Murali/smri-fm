@@ -59,19 +59,31 @@ class SmriMaeTransform:
         spacing = img.header.get_zooms()
 
         # resize
-        data = rescale(data, spacing, target_spacing=self.spacing)
+        if max(abs(s - s_) for s, s_ in zip(spacing, self.spacing)) > 0.05:
+            data = rescale(data, spacing, target_spacing=self.spacing)
 
         # tranpose (X, Y, Z) F-order -> (Z, Y, X) C-order
         # TODO: this shape issue is a footgun. need to be consistent and obvious about
         # whether we are doing (X, Y, Z) or (Z, Y, X) for image as well as img_size,
         # spacing.
-        data = data.T.contiguous()
+        data = data.permute(2, 1, 0).contiguous()
         data = pad_to_shape(data, self.img_size)
 
         # cheap mask
+        # if we want a better mask, we have to compute it here.
+        # model contract is nifti image -> embedding
         mask = data > data.mean()
 
-        # TODO(mihir) normalization?
+        # z-score over brain-mask voxels (matches pretraining); background -> 0.
+        # Raw intensities reach ~1e6, so this must happen before the fp16 cast.
+        brain = data[mask]
+        # population std (÷N, correction=0) to match the pretraining normalization.
+        mean, std = brain.mean(), brain.std(correction=0).clamp_min(1e-6)
+        data = torch.where(mask, (data - mean) / std, 0.0)
+
+        # fp16 and add channel dim
+        data = data.half().unsqueeze(0)
+        mask = mask.unsqueeze(0)
 
         sample = {"image": data, "mask": mask}
         return sample
