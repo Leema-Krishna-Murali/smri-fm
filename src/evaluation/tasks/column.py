@@ -17,7 +17,7 @@ class ColumnTask:
     name: str
     kind: Kind
     data: HFDataset
-    splitter: BaseCrossValidator
+    splitter: BaseCrossValidator | list[tuple[np.ndarray, np.ndarray]]
     image_column: str = "image"
     target_column: str = "target"
     group_column: str | None = None
@@ -34,10 +34,13 @@ class ColumnTask:
         return dataset
 
     def split(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        if isinstance(self.splitter, list):
+            yield from self.splitter
+
         indices = np.arange(len(self.data))
         targets = np.asarray(self.data[self.target_column])
         groups = np.asarray(self.data[self.group_column]) if self.group_column else None
-        return self.splitter.split(indices, y=targets, groups=groups)
+        yield from self.splitter.split(indices, y=targets, groups=groups)
 
     def metrics(self, y_true: np.ndarray, y_pred: np.ndarray, test_idx: np.ndarray) -> dict:
         if self.kind == "regression":
