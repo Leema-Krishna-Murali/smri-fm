@@ -5,26 +5,9 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset as HFDataset
 from sklearn.model_selection import BaseCrossValidator
-from torch.utils.data import Dataset
 
 from evaluation.tasks.base import Kind
 from evaluation.tasks.metrics import classification_metrics, regression_metrics
-
-
-class ColumnDataset(Dataset):
-    """Adapts HF dataset rows to canonical ``{image, target}`` samples."""
-
-    def __init__(self, data: HFDataset, image_column: str, target_column: str):
-        self.data = data
-        self.image_column = image_column
-        self.target_column = target_column
-
-    def __len__(self) -> int:
-        return len(self.data)
-
-    def __getitem__(self, index: int) -> dict:
-        row = self.data[index]
-        return {"image": row[self.image_column], "target": row[self.target_column]}
 
 
 @dataclass
@@ -45,8 +28,10 @@ class ColumnTask:
         if len(valid) < len(self.data):
             self.data = self.data.select(valid)
 
-    def dataset(self) -> ColumnDataset:
-        return ColumnDataset(self.data, self.image_column, self.target_column)
+    def dataset(self) -> HFDataset:
+        column_mapping = {self.image_column: "image", self.target_column: "target"}
+        dataset = self.data.select_columns(list(column_mapping)).rename_columns(column_mapping)
+        return dataset
 
     def split(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:
         indices = np.arange(len(self.data))

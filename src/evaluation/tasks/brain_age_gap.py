@@ -6,7 +6,6 @@ from datasets import Dataset as HFDataset
 from scipy import stats
 
 from evaluation.tasks.base import Kind
-from evaluation.tasks.column import ColumnDataset
 
 
 @dataclass
@@ -30,8 +29,10 @@ class BrainAgeGapTask:
     seed: int = 0
     kind: Kind = "regression"
 
-    def dataset(self) -> ColumnDataset:
-        return ColumnDataset(self.data, self.image_column, self.age_column)
+    def dataset(self) -> HFDataset:
+        column_mapping = {self.image_column: "image", self.age_column: "target"}
+        dataset = self.data.select_columns(list(column_mapping)).rename_columns(column_mapping)
+        return dataset
 
     def split(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:
         dx = np.asarray(self.data[self.dx_column])
