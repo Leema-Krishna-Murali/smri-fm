@@ -2,10 +2,6 @@ output_root: output/eval_probe
 # default name: {model}__{task}
 name: null
 
-task: ???
-task_kwargs: {}
-
-model: ???
 model_kwargs: {}
 
 batch_size: 4

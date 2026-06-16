@@ -17,9 +17,9 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
 
 from evaluation.models.base import Model, Transform
-from evaluation.models.registry import create_model
+from evaluation.models.registry import create_model, list_models
 from evaluation.tasks.base import Task
-from evaluation.tasks.registry import create_task
+from evaluation.tasks.registry import create_task, list_tasks
 
 DEFAULT_CONFIG = Path(__file__).parent / "config/default_probe.yaml"
 
@@ -167,7 +167,12 @@ def git_sha() -> str:
         return "unknown"
 
 
-def main(config_path: str | Path | None = None, overrides: list[str] | None = None) -> dict:
+def main(
+    model_name: str,
+    task_name: str,
+    config_path: str | Path | None = None,
+    overrides: list[str] | None = None,
+) -> dict:
     cfg = OmegaConf.load(DEFAULT_CONFIG)
     if config_path:
         cfg = OmegaConf.unsafe_merge(cfg, OmegaConf.load(config_path))
@@ -175,6 +180,9 @@ def main(config_path: str | Path | None = None, overrides: list[str] | None = No
         cfg = OmegaConf.unsafe_merge(cfg, OmegaConf.from_dotlist(overrides))
 
     set_seed(cfg.seed)
+
+    cfg.model = model_name
+    cfg.task = task_name
     cfg.name = cfg.name or f"{cfg.model}__{cfg.task}"
 
     run_dir = Path(cfg.output_root) / cfg.name
@@ -188,7 +196,7 @@ def main(config_path: str | Path | None = None, overrides: list[str] | None = No
 
     device = torch.device(cfg.device)
 
-    task = create_task(cfg.task, **(cfg.task_kwargs or {}))
+    task = create_task(cfg.task)
     model, transform = create_model(cfg.model, **(cfg.model_kwargs or {}))
     model.to(device)
 
@@ -219,10 +227,12 @@ def main(config_path: str | Path | None = None, overrides: list[str] | None = No
 
 def cli() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("model", type=str, help=f"[{', '.join(list_models())}]")
+    parser.add_argument("task", type=str, help=f"[{', '.join(list_tasks())}]")
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--overrides", type=str, default=None, nargs="+")
     args = parser.parse_args()
-    main(args.config, args.overrides)
+    main(args.model, args.task, args.config, args.overrides)
 
 
 if __name__ == "__main__":
