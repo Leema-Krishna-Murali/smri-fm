@@ -1,17 +1,17 @@
 # Evaluation
 
-Internal evaluation suite. Currently only supporting frozen-feature sklearn probe.
+Internal evaluation suite. Currently only supporting frozen-feature sklearn linear probe.
 
 ## Run
 
 ```bash
-uv run python -m evaluation.main_probe <model> <task> [--config cfg.yaml] [--overrides key=value ...]
+uv run python -m evaluation.main_linear <model> <task> [--config cfg.yaml] [--overrides key=value ...]
 # e.g.
-uv run python -m evaluation.main_probe smri_mae dlbs_age --overrides model_kwargs.ckpt_path=/path/to/ckpt.pth
+uv run python -m evaluation.main_linear smri_mae dlbs_age --overrides model_kwargs.ckpt_path=/path/to/ckpt.pth
 ```
 
 `model` and `task` are registered names (the CLI `--help` lists them). Run-level
-settings come from [config/default_probe.yaml](config/default_probe.yaml),
+settings come from [config/default_linear.yaml](config/default_linear.yaml),
 overridden by an optional `--config` and then dot-list `--overrides`.
 
 Outputs save in `<output_root>/<name>/` (default name `<model>__<task>`):
@@ -23,7 +23,7 @@ Outputs save in `<output_root>/<name>/` (default name `<model>__<task>`):
 
 ## Architecture
 
-- [main_probe.py](main_probe.py) is the main entrypoint
+- [main_linear.py](main_linear.py) is the main entrypoint
 - [models/](models/) contains model wrappers, e.g. [models/smri_mae.py](models/smri_mae.py). Each model defines a transform (`nib.Nifti1Image -> sample dict`) as well as the model itself (`batch dict -> embeddings`).
 - [tasks/](tasks/) contains defined tasks, e.g. [tasks/fomo.py](tasks/fomo.py). Each task consists of a dataset as well as defined targets, splits, and scoring metrics.
 

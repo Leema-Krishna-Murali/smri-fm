@@ -5,7 +5,7 @@ import torch.nn as nn
 from datasets import Dataset
 from sklearn.model_selection import KFold, StratifiedKFold
 
-from evaluation.main_probe import aggregate_folds, main, run_probe
+from evaluation.main_linear import aggregate_folds, main, run_linear
 from evaluation.models.registry import register_model
 from evaluation.tasks.column import ColumnTask
 from evaluation.tasks.registry import register_task
@@ -29,7 +29,7 @@ def test_aggregate_folds_mean_and_std():
 
 
 def _run(task):
-    return run_probe(
+    return run_linear(
         task,
         DummyModel(),
         dummy_transform,
@@ -40,7 +40,7 @@ def _run(task):
     )
 
 
-def test_run_probe_regression_recovers_linear_target():
+def test_run_linear_regression_recovers_linear_target():
     rng = np.random.default_rng(0)
     X = rng.normal(size=(30, 5))
     y = X @ rng.normal(size=5)  # exactly linear => ridge recovers it
@@ -55,7 +55,7 @@ def test_run_probe_regression_recovers_linear_target():
     assert metrics["summary"]["mae"] < 0.1
 
 
-def test_run_probe_classification_handles_string_labels():
+def test_run_linear_classification_handles_string_labels():
     rng = np.random.default_rng(0)
     X = rng.normal(size=(40, 5))
     y = np.where(X[:, 0] > 0, "pos", "neg")
@@ -74,18 +74,18 @@ def test_run_probe_classification_handles_string_labels():
 
 
 @register_model
-def _probe_test_model():
+def _linear_test_model():
     return DummyModel(), dummy_transform
 
 
 @register_task
-def _probe_test_task(n_splits: int = 3):
+def _linear_test_task(n_splits: int = 3):
     rng = np.random.default_rng(0)
     X = rng.normal(size=(30, 5))
     y = X @ rng.normal(size=5)
     data = Dataset.from_dict({"image": X.tolist(), "target": y.tolist()})
     return ColumnTask(
-        name="_probe_test_task",
+        name="_linear_test_task",
         kind="regression",
         data=data,
         splitter=KFold(n_splits, shuffle=True, random_state=0),
@@ -94,11 +94,11 @@ def _probe_test_task(n_splits: int = 3):
 
 def test_main_writes_run_artifacts(tmp_path):
     metrics = main(
-        "_probe_test_model",
-        "_probe_test_task",
+        "_linear_test_model",
+        "_linear_test_task",
         overrides=[f"output_root={tmp_path}", "device=cpu", "num_workers=0"],
     )
-    assert metrics["model"] == "_probe_test_model"
+    assert metrics["model"] == "_linear_test_model"
 
     (summary_path,) = list(tmp_path.rglob("summary.csv"))
     run_dir = summary_path.parent

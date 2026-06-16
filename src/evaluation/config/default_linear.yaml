@@ -1,4 +1,4 @@
-output_root: output/eval_probe
+output_root: output/eval_linear
 # default name: {model}__{task}
 name: null
 

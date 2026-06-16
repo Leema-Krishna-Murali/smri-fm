@@ -21,7 +21,7 @@ from evaluation.models.registry import create_model, list_models
 from evaluation.tasks.base import Task
 from evaluation.tasks.registry import create_task, list_tasks
 
-DEFAULT_CONFIG = Path(__file__).parent / "config/default_probe.yaml"
+DEFAULT_CONFIG = Path(__file__).parent / "config/default_linear.yaml"
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def extract_features(
     return X, y
 
 
-def run_probe(
+def run_linear(
     task: Task,
     model: Model,
     transform: Transform,
@@ -204,7 +204,7 @@ def main(
     logger.info(f"model: {cfg.model}")
     logger.info(f"dataset: {len(task.dataset())} samples")
 
-    metrics = run_probe(
+    metrics = run_linear(
         task,
         model,
         transform,
