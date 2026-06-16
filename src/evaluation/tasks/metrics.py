@@ -9,7 +9,6 @@ def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, floa
     return {
         "mae": float(np.abs(residuals).mean()),
         "rmse": float(np.sqrt((residuals**2).mean())),
-        "bias": float(residuals.mean()),
         "r2": float(skm.r2_score(y_true, y_pred)),
     }
 
