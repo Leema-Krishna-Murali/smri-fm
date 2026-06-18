@@ -26,4 +26,5 @@ echo "Working directory: $(pwd)"
 # Just specify your config
 # uv run python -m evaluation.main --config <config_path>
 # Example:
-uv run python -m evaluation.main --config src/evaluation/config/fomo_brain_age_gap_probe.yaml
+# uv run python -m evaluation.main --config src/evaluation/config/fomo_brain_age_gap_probe.yaml
+uv run python -m evaluation.main --config src/evaluation/config/fomo_brain_age_gap_scikit_probe.yaml
