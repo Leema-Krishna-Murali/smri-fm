@@ -20,6 +20,7 @@ from evaluation.models.base import Model, Transform
 from evaluation.models.registry import create_model, list_models
 from evaluation.tasks.base import Task
 from evaluation.tasks.registry import create_task, list_tasks
+from evaluation.utils import classification_score
 
 DEFAULT_CONFIG = Path(__file__).parent / "config/default_linear.yaml"
 
@@ -54,11 +55,12 @@ class TransformDataset(Dataset):
 
     def __getitem__(self, index: int):
         sample = self.dataset[index]
-        img = sample["image"]
         target = sample["target"]
-        sample = self.transform(img)
-        sample["target"] = target
-        return sample
+        if not isinstance(target, str):
+            target = torch.as_tensor(target)
+        out = self.transform(sample["image"])
+        out["target"] = target
+        return out
 
 
 def to_device(batch: dict, device: torch.device) -> dict:
@@ -118,7 +120,14 @@ def run_linear(
     for fold, (train_idx, test_idx) in enumerate(task.split()):
         estimator = fit(X[train_idx], y[train_idx], seed)
         pred = estimator.predict(X[test_idx])
-        scores = task.metrics(y[test_idx], pred, test_idx)
+        y_score = None
+        if task.kind == "classification":
+            y_score = classification_score(
+                estimator,
+                X[test_idx],
+                getattr(task, "positive_label", None),
+            )
+        scores = task.metrics(y[test_idx], pred, test_idx, y_score=y_score)
         fold_metrics.append(scores)
         logger.info(f"fold {fold}: " + " ".join(f"{k}={v:.4f}" for k, v in scores.items()))
 
