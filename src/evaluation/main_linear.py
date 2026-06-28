@@ -19,8 +19,8 @@ from torch.utils.data import DataLoader, Dataset
 from evaluation.models.base import Model, Transform
 from evaluation.models.registry import create_model, list_models
 from evaluation.tasks.base import Task
+from evaluation.tasks.metrics import classification_score
 from evaluation.tasks.registry import create_task, list_tasks
-from evaluation.utils import classification_score
 
 DEFAULT_CONFIG = Path(__file__).parent / "config/default_linear.yaml"
 
@@ -121,11 +121,12 @@ def run_linear(
         estimator = fit(X[train_idx], y[train_idx], seed)
         pred = estimator.predict(X[test_idx])
         y_score = None
-        if task.kind == "classification":
+        positive_label = getattr(task, "positive_label", None)
+        if task.kind == "classification" and positive_label is not None:
             y_score = classification_score(
                 estimator,
                 X[test_idx],
-                getattr(task, "positive_label", None),
+                positive_label,
             )
         scores = task.metrics(y[test_idx], pred, test_idx, y_score=y_score)
         fold_metrics.append(scores)

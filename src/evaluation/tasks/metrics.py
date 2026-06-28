@@ -1,6 +1,7 @@
 import numpy as np
 from scipy import stats
 from sklearn import metrics as skm
+from sklearn.pipeline import Pipeline
 
 
 def accuracy(y_true: np.ndarray, y_pred: np.ndarray, **_) -> float:
@@ -35,6 +36,12 @@ def auprc(
     **_,
 ) -> float:
     return float(skm.average_precision_score(np.asarray(y_true) == positive_label, y_score))
+
+
+def classification_score(estimator: Pipeline, X: np.ndarray, positive_label) -> np.ndarray | None:
+    proba = estimator.predict_proba(X)
+    classes = np.asarray(estimator.classes_)
+    return proba[:, np.flatnonzero(classes == positive_label)[0]]
 
 
 def r2(y_true: np.ndarray, y_pred: np.ndarray, **_) -> float:
