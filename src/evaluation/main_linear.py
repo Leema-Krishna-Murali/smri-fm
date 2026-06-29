@@ -89,7 +89,8 @@ def extract_features(
     for batch in loader:
         targets.extend(batch.pop("target"))
         batch = to_device(batch, device)
-        embeddings = model(batch)
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+            embeddings = model(batch)
         features.append(embeddings.cpu().float())
 
     X = torch.cat(features).numpy()
