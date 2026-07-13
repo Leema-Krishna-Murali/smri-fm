@@ -17,7 +17,7 @@ MaskedAutoEncoderViT: full MAE model for 3D structural MRI volumes
 """
 
 from collections.abc import Sequence
-from typing import Literal, Type
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -34,12 +34,6 @@ from .modules import (
     SinCosPosEmbed3D,
     Normalize,
 )
-from .utils import filter_kwargs
-
-
-Layer = Type[nn.Module]
-
-
 def trim_patch_mask(
     patch_mask: Float[Tensor, "B N"],
     mask_ratio: float,
@@ -341,7 +335,6 @@ class MaskedDecoder(nn.Module):
 
         context_dim = embed_dim if context_dim is None else context_dim
         self.cross_decode = cross_decode
-        self.context_dim = context_dim
         self.has_class_token = class_token
         self.no_embed_class = no_embed_class
 
@@ -434,7 +427,7 @@ class MaskedDecoder(nn.Module):
         - pred [B, Q, P] where Q is the number of prediction patches and P is the output
             dimension
         """
-        B, L, D = embeds.shape
+        B, L, _ = embeds.shape
 
         Q = self.pos_embed.num_patches if pred_ids is None else pred_ids.shape[1]
         mask = self.mask_token.expand(B, Q, -1)
@@ -703,7 +696,7 @@ class MaskedAutoencoderViT(nn.Module, PyTorchModelHubMixin):
         img_mask: Tensor | None = None,
         targets_stats: tuple[Tensor, Tensor] | None = None,
     ) -> Tensor:
-        B, Q, P = preds.shape
+        B, _, P = preds.shape
         N = self.pred_patchify.num_patches
 
         preds = torch.zeros((B, N, P), dtype=preds.dtype, device=preds.device).scatter_(
@@ -783,19 +776,6 @@ class MaskedAutoencoderViT(nn.Module, PyTorchModelHubMixin):
         if mask is not None:
             mask = mask.to(device=x.device, dtype=x.dtype)
         return self.encoder.forward_embedding(x, mask=mask, mask_ratio=mask_ratio)
-
-    @staticmethod
-    def from_checkpoint(ckpt_path: str, **kwargs) -> "MaskedAutoencoderViT":
-        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-        args = ckpt["args"]
-        model_kwargs = {k: args[k] for k in ["img_size", "in_chans", "patch_size"] if k in args}
-        model_kwargs.update(args["model_kwargs"] or {})
-        model_kwargs.update(kwargs)
-        model_fn = MODELS_DICT[args["model"]]
-        model = model_fn(**model_kwargs)
-        model.load_state_dict(ckpt["model"])
-        return model
-
 
 class MaskedViT(MaskedEncoder, PyTorchModelHubMixin):
     def __init__(
@@ -894,46 +874,14 @@ def _init_weights(m: nn.Module) -> None:
 
 
 def _create_vit(**kwargs):
-    kwargs = filter_kwargs(MaskedViT, kwargs)
     model = MaskedViT(**kwargs)
     return model
 
 
 def _create_mae_vit(**kwargs):
-    kwargs = filter_kwargs(MaskedAutoencoderViT, kwargs)
     model = MaskedAutoencoderViT(**kwargs)
     return model
 
-
-def _convert_from_timm(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-    out_dict = {}
-    swaps = [
-        ("patch_embed.proj", "patch_embed"),
-    ]
-
-    class_token = "cls_token" in state_dict
-    reg_tokens = 0 if "reg_token" not in state_dict else state_dict["reg_token"].shape[1]
-    num_prefix_tokens = int(class_token) + reg_tokens
-
-    for name, p in state_dict.items():
-        for old, new in swaps:
-            if name.startswith(old):
-                name = name.replace(old, new)
-
-        if name == "patch_embed.weight":
-            out_dict[name] = p.flatten(1)
-        elif name == "pos_embed":
-            out_dict["pos_embed.weight"] = p[0, num_prefix_tokens:, :]
-            if class_token:
-                out_dict["cls_token_pos"] = p[:, :1, :]
-            if reg_tokens:
-                out_dict["reg_token_pos"] = p[:, int(class_token) : num_prefix_tokens, :]
-        elif "qkv" in name:
-            # timm fused qkv maps directly to our fused qkv
-            out_dict[name] = p
-        else:
-            out_dict[name] = p
-    return out_dict
 
 def mae_vit_small(**kwargs):
     model_args = dict(embed_dim=384, depth=12, num_heads=6)

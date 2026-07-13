@@ -178,46 +178,6 @@ class Patchify3D(nn.Module):
         return f"{self.img_size}, {self.patch_size}, in_chans={self.in_chans}"
 
 
-class StridedPatchify3D(nn.Module):
-    def __init__(
-        self,
-        img_size: int | tuple[int, int, int],
-        patch_size: int | tuple[int, int, int],
-        in_chans: int = 3,
-        t_stride: int = 2,
-    ) -> None:
-        super().__init__()
-        T, H, W = to_3tuple(img_size)
-        p_t, p_h, p_w = to_3tuple(patch_size)
-        assert (T % t_stride) == (p_t % t_stride) == 0, "invalid t_stride"
-
-        self.img_size = (T, H, W)
-        self.patch_size = (p_t // t_stride, p_h, p_w)
-        self.in_chans = in_chans
-        self.t_stride = t_stride
-
-        self.grid_size = (T // p_t, H // p_h, W // p_w)
-        self.num_patches = math.prod(self.grid_size)
-        self.patch_dim = in_chans * math.prod(self.patch_size)
-
-    def forward(self, x: Float[Tensor, "B C T H W"]) -> Float[Tensor, "B N P"]:
-        x = x[:, :, :: self.t_stride]
-        x = patchify3d(x, self.patch_size)
-        return x
-
-    def unpatchify(self, x: Float[Tensor, "B N P"]) -> Float[Tensor, "B C T H W"]:
-        T, H, W = self.img_size
-        x = unpatchify3d(x, patch_size=self.patch_size, img_size=(T // self.t_stride, H, W))
-        x = torch.repeat_interleave(x, self.t_stride, dim=2)
-        return x
-
-    def extra_repr(self):
-        return (
-            f"{self.img_size}, {self.patch_size}, in_chans={self.in_chans}, "
-            f"t_stride={self.t_stride}"
-        )
-
-
 def patchify3d(x: Tensor, patch_size: tuple[int, int, int]) -> Tensor:
     p_t, p_h, p_w = to_3tuple(patch_size)
     B, C, T, H, W = x.shape
@@ -358,21 +318,6 @@ def get_3d_sincos_pos_embed(embed_dim, grid_size, grid_depth, cls_token=False, u
     emb_d = get_1d_sincos_pos_embed_from_grid(d_embed_dim, grid_d)  # (T*H*W, D3)
     pos_embed = np.concatenate([emb_d, emb_h, emb_w], axis=1)
     pos_embed = pos_embed[:, :embed_dim]
-    if cls_token:
-        pos_embed = np.concatenate([np.zeros([1, embed_dim]), pos_embed], axis=0)
-    return pos_embed
-
-
-def get_1d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
-    """
-    embed_dim: output dimension for each position
-    grid_size: int of the grid length
-    returns:
-        pos_embed: [grid_size, embed_dim] (w/o cls_token)
-                or [1+grid_size, embed_dim] (w/ cls_token)
-    """
-    grid = np.arange(grid_size, dtype=float)
-    pos_embed = get_1d_sincos_pos_embed_from_grid(embed_dim, grid)
     if cls_token:
         pos_embed = np.concatenate([np.zeros([1, embed_dim]), pos_embed], axis=0)
     return pos_embed

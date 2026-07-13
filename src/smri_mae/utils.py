@@ -448,7 +448,8 @@ def clip_grad(optimizer: Optimizer, max_norm: float | None = None) -> Tensor:
     if max_norm:
         total_norm = nn.utils.clip_grad_norm_(params, max_norm, error_if_nonfinite=True)
     else:
-        total_norm = nn.utils.get_total_norm(params)
+        grads = [p.grad for p in params if p.grad is not None]
+        total_norm = nn.utils.get_total_norm(grads, error_if_nonfinite=True)
     return total_norm
 
 
@@ -462,7 +463,10 @@ def get_param_groups(model, patch_embed_lr_mult=1.0):
             continue
         d = {"param": param, "lr_multiplier": 1.0, "wd_multiplier": 1.0, "name": name}
 
-        if name.endswith(".bias") or "norm" in name or "gamma" in name:
+        if param.ndim <= 1 or any(
+            token in name
+            for token in ("norm", "gamma", "cls_token", "reg_token", "mask_token", "pos_embed")
+        ):
             d["wd_multiplier"] = 0.0
 
         if "patch_embed" in name:
@@ -547,7 +551,6 @@ def get_sha():
     branch = "N/A"
     try:
         sha = _run(["git", "rev-parse", "HEAD"])
-        subprocess.check_output(["git", "diff"], cwd=cwd)
         diff = _run(["git", "diff-index", "HEAD"])
         diff = "has uncommitted changes" if diff else "clean"
         branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
