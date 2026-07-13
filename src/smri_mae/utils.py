@@ -328,6 +328,7 @@ def save_model(args, epoch, model_without_ddp, optimizer, loss_scaler):
         "epoch": epoch,
         "scaler": None if loss_scaler is None else loss_scaler.state_dict(),
         "args": OmegaConf.to_container(args),
+        "rng_states": _all_rank_rng_states(),
     }
 
     print(f"saving checkpoint {last_checkpoint_path}")
@@ -362,6 +363,15 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler):
             if loss_scaler is not None:
                 loss_scaler.load_state_dict(ckpt["scaler"])
             args.start_epoch = ckpt["epoch"] + 1
+            rng_states = ckpt.get("rng_states")
+            if rng_states is not None:
+                if len(rng_states) != get_world_size():
+                    raise ValueError(
+                        "checkpoint RNG state world size does not match current world size: "
+                        f"{len(rng_states)} != {get_world_size()}"
+                    )
+                restore_rng_state(rng_states[get_rank()])
+                print(f"restored RNG state for rank {get_rank()}")
             print(f"loaded optimizer state, resuming training from {args.start_epoch}")
 
 
