@@ -414,7 +414,7 @@ def backward_step(
 def clip_grad(optimizer: Optimizer, max_norm: float | None = None) -> Tensor:
     params = [p for group in optimizer.param_groups for p in group["params"]]
     if max_norm:
-        total_norm = nn.utils.clip_grad_norm_(params, max_norm=max_norm)
+        total_norm = nn.utils.clip_grad_norm_(params, max_norm, error_if_nonfinite=True)
     else:
         total_norm = nn.utils.get_total_norm(params)
     return total_norm

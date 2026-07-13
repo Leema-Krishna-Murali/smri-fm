@@ -389,7 +389,10 @@ def evaluate(
                 pred_mask_ratio=args.pred_mask_ratio,
             )
 
-        metric_logger.update(loss=loss)
+        metric_logger.meters["loss"].update(
+            loss.detach().float().item(),
+            n=int(batch["img_mask"].shape[0]),
+        )
 
         if is_master and batch_step == example_step:
             example_batch = {**batch, "image": images, "img_mask": img_mask}
