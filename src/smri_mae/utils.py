@@ -293,6 +293,28 @@ def init_distributed_mode(args):
 # checkpoint saving utils adapted from beit3
 
 
+def capture_rng_state() -> dict:
+    state = {"torch": torch.get_rng_state()}
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state()
+    return state
+
+
+def restore_rng_state(state: dict) -> None:
+    torch.set_rng_state(state["torch"])
+    if "cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state(state["cuda"])
+
+
+def _all_rank_rng_states() -> list[dict]:
+    local_state = capture_rng_state()
+    if not is_dist_avail_and_initialized():
+        return [local_state]
+    states = [None] * get_world_size()
+    dist.all_gather_object(states, local_state)
+    return states
+
+
 def save_model(args, epoch, model_without_ddp, optimizer, loss_scaler):
     output_dir = Path(args.output_dir)
     checkpoint_path = output_dir / f"checkpoint-{epoch:05d}.pth"

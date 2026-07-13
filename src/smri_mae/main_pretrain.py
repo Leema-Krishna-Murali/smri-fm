@@ -360,9 +360,14 @@ def evaluate(
     print_freq = args.get("print_freq", 100) if not args.debug else 1
     num_batches = epoch_num_batches if not args.debug else 10
     num_batches = min(num_batches, epoch_num_batches)
-    example_step = random.randint(1, num_batches)
+    eval_seed = int(args.get("eval_seed", args.seed)) + ut.get_rank()
+    example_step = random.Random(eval_seed).randint(1, num_batches)
     amp_dtype = getattr(torch, args.amp_dtype)
     use_cuda = device.type == "cuda"
+    rng_state = ut.capture_rng_state()
+    torch.set_rng_state(torch.Generator().manual_seed(eval_seed).get_state())
+    if use_cuda:
+        torch.cuda.manual_seed(eval_seed)
     if use_cuda and args.presend_cuda:
         data_loader = ut.pre_send_to_cuda_wrapper(data_loader, device, dtype_map={torch.float16: amp_dtype})
 
@@ -418,6 +423,7 @@ def evaluate(
             {k: wandb.Image(img, caption=f"example={example_step}") for k, img in plots.items()},
             step=1000 * (epoch + 1),
         )
+    ut.restore_rng_state(rng_state)
     return stats, plots
 
 
