@@ -12,6 +12,7 @@ import math
 import random
 import subprocess
 import time
+from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -119,7 +120,7 @@ def main(args: DictConfig):
     optimizer = torch.optim.AdamW(param_groups, betas=betas, fused=True)
 
     epoch_num_batches = len(train_loader)
-    steps_per_epoch = epoch_num_batches // args.accum_iter
+    steps_per_epoch = math.ceil(epoch_num_batches / args.accum_iter)
     total_steps = args.epochs * steps_per_epoch
     warmup_steps = args.warmup_epochs * steps_per_epoch
     lr_schedule = ut.WarmupThenCosine(
@@ -256,7 +257,7 @@ def train_one_epoch(
     log_wandb = args.wandb and ut.is_main_process()
 
     epoch_num_batches = len(data_loader)
-    steps_per_epoch = epoch_num_batches // args.accum_iter
+    steps_per_epoch = math.ceil(epoch_num_batches / args.accum_iter)
 
     print_freq = args.get("print_freq", 100) if not args.debug else 1
     num_batches = epoch_num_batches if not args.debug else 10
@@ -276,10 +277,11 @@ def train_one_epoch(
 
         batch_step = batch_idx + 1
         log_step = batch_step % print_freq == 0 or batch_step == num_batches
-        global_step = epoch * steps_per_epoch + batch_step // args.accum_iter
+        update_in_epoch = batch_idx // args.accum_iter
+        group_size = min(args.accum_iter, num_batches - update_in_epoch * args.accum_iter)
+        need_update = batch_step % args.accum_iter == 0 or batch_step == num_batches
+        global_step = epoch * steps_per_epoch + update_in_epoch
         lr = lr_schedule[global_step]
-        need_update = batch_step % args.accum_iter == 0
-
         if need_update:
             ut.update_lr(optimizer.param_groups, lr)
 
@@ -290,44 +292,37 @@ def train_one_epoch(
             dtype=amp_dtype,
         )
 
-        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=args.amp):
-            loss = model(
-                images,
-                img_mask=img_mask,
-                mask_ratio=args.mask_ratio,
-                pred_mask_ratio=args.pred_mask_ratio,
-                with_state=False,
-            )
+        sync_context = model.no_sync() if args.distributed and not need_update else nullcontext()
+        with sync_context:
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=args.amp):
+                loss = model(
+                    images,
+                    img_mask=img_mask,
+                    mask_ratio=args.mask_ratio,
+                    pred_mask_ratio=args.pred_mask_ratio,
+                    with_state=False,
+                )
 
-        if log_step:
-            loss_for_log = loss.detach()
-            if args.distributed:
-                loss_for_log = loss_for_log.clone()
-                torch.distributed.all_reduce(loss_for_log)
-                loss_for_log /= ut.get_world_size()
-
-            loss_value = loss_for_log.item()
+            loss_value = loss.detach().float().item()
             if not math.isfinite(loss_value):
                 raise RuntimeError(f"Loss is {loss_value}, stopping training")
+            batch_size = int(batch["img_mask"].shape[0])
+            metric_logger.meters["loss"].update(loss_value, n=batch_size)
 
-        grad_norm = ut.backward_step(
-            loss / args.accum_iter,
-            optimizer,
-            scaler=loss_scaler,
-            need_update=need_update,
-            max_norm=args.clip_grad,
-        )
-
-        if need_update and log_step:
-            grad_norm_value = grad_norm.item()
-            metric_logger.update(
-                loss=loss_value,
-                lr=lr,
-                grad=grad_norm_value,
+            grad_norm = ut.backward_step(
+                loss / group_size,
+                optimizer,
+                scaler=loss_scaler,
+                need_update=need_update,
+                max_norm=args.clip_grad,
             )
-            if log_wandb:
+
+        if need_update:
+            grad_norm_value = grad_norm.item()
+            metric_logger.update(lr=lr, grad=grad_norm_value)
+            if log_wandb and log_step:
                 wandb_stats = {
-                    "train/loss": loss_value,
+                    "train/loss": metric_logger.meters["loss"].global_avg,
                     "train/lr": lr,
                     "train/grad": grad_norm_value,
                 }
