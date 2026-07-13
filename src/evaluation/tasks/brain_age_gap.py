@@ -3,9 +3,9 @@ from dataclasses import dataclass
 
 import numpy as np
 from datasets import Dataset as HFDataset
+from scipy import stats
 
 from evaluation.tasks.base import Kind
-from evaluation.tasks.metrics import pearson_r
 
 
 @dataclass
@@ -48,6 +48,9 @@ class BrainAgeGapTask:
         test_idx: np.ndarray,
         y_score: np.ndarray | None = None,
     ) -> dict:
-        return {
-            "pearson_r": pearson_r(y_true, y_pred),
-        }
+        gap = (y_pred - y_true).reshape(-1)
+        dx = np.asarray(self.data[self.dx_column])[test_idx]
+        case_gap = gap[dx == self.case_label]
+        control_gap = gap[dx == self.control_label]
+        test = stats.ttest_ind(case_gap, control_gap)
+        return {"bag_tstat": float(test.statistic)}
