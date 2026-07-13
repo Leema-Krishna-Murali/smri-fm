@@ -14,6 +14,7 @@ import subprocess
 import time
 from contextlib import nullcontext
 from functools import partial
+from itertools import islice
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -371,8 +372,9 @@ def evaluate(
     if use_cuda and args.presend_cuda:
         data_loader = ut.pre_send_to_cuda_wrapper(data_loader, device, dtype_map={torch.float16: amp_dtype})
 
+    eval_batches = islice(data_loader, num_batches)
     for batch_idx, batch in enumerate(
-        metric_logger.log_every(data_loader, print_freq, header, total_steps=epoch_num_batches)
+        metric_logger.log_every(eval_batches, print_freq, header, total_steps=num_batches)
     ):
         if use_cuda and not args.presend_cuda:
             batch = ut.send_data(batch, device, dtype_map={torch.float16: amp_dtype})
@@ -394,16 +396,27 @@ def evaluate(
                 pred_mask_ratio=args.pred_mask_ratio,
             )
 
-        metric_logger.meters["loss"].update(
-            loss.detach().float().item(),
-            n=int(batch["img_mask"].shape[0]),
+        loss_value = loss.detach().float().item()
+        finite = torch.tensor(
+            int(math.isfinite(loss_value)), dtype=torch.int32, device=device
         )
+        if args.distributed:
+            torch.distributed.all_reduce(finite, op=torch.distributed.ReduceOp.MIN)
+        if not finite.item():
+            raise RuntimeError("non-finite validation loss detected")
+        metric_logger.meters["loss"].update(loss_value, n=int(batch["img_mask"].shape[0]))
 
         if is_master and batch_step == example_step:
-            example_batch = {**batch, "image": images, "img_mask": img_mask}
+            example_batch = {"image": images[:1], "img_mask": img_mask[:1]}
+            if "meta" in batch:
+                example_batch["meta"] = batch["meta"][:1]
+            example_state = {
+                "pred_images": state["pred_images"][:1],
+                "pred_mask": state["pred_mask"][:1],
+            }
             example_data = {
                 "batch": ut.send_data(example_batch, "cpu"),
-                "state": ut.send_data(state, "cpu"),
+                "state": ut.send_data(example_state, "cpu"),
             }
 
     # gather the stats from all processes
@@ -445,7 +458,6 @@ def make_plots(
     mask_pred_fig = vis.plot_mask_pred(
         target=images,
         pred=state["pred_images"],
-        visible_mask=state["visible_mask"],
         pred_mask=state["pred_mask"],
         img_mask=img_mask,
         patch_size=args.patch_size,
