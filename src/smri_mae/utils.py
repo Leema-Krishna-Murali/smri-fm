@@ -463,10 +463,7 @@ def get_param_groups(model, patch_embed_lr_mult=1.0):
             continue
         d = {"param": param, "lr_multiplier": 1.0, "wd_multiplier": 1.0, "name": name}
 
-        if param.ndim <= 1 or any(
-            token in name
-            for token in ("norm", "gamma", "cls_token", "reg_token", "mask_token", "pos_embed")
-        ):
+        if name.endswith(".bias") or "norm" in name or "gamma" in name:
             d["wd_multiplier"] = 0.0
 
         if "patch_embed" in name:
