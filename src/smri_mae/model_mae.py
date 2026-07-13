@@ -681,8 +681,7 @@ class MaskedAutoencoderViT(nn.Module, PyTorchModelHubMixin):
         targets_patches = targets_patches.gather(1, pred_ids)
         pred_mask_patches = pred_mask_patches.gather(1, pred_ids)
 
-        # Accumulate the voxel objective in FP32 even when the transformer runs in BF16.
-        loss = (preds.float() - targets_patches.float()) ** 2
+        loss = (preds - targets_patches) ** 2
         per_subject_loss = (pred_mask_patches * loss).sum(dim=(1, 2)) / pred_mask_patches.sum(
             dim=(1, 2)
         )
