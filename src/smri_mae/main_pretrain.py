@@ -45,6 +45,7 @@ def main(args: DictConfig):
     is_master = global_rank == 0
     world_size = ut.get_world_size()
     device = torch.device(args.device)
+    ut.configure_flash_sdpa()
     ut.random_seed(args.seed, rank=global_rank)
 
     if args.name and not args.output_dir.endswith(args.name):
@@ -94,11 +95,12 @@ def main(args: DictConfig):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[args.gpu],
+            gradient_as_bucket_view=True,
+        )
         model_without_ddp = model.module
-
-    if args.compile:
-        model = torch.compile(model)
 
     # optimizer
     total_batch_size = args.batch_size * args.accum_iter * world_size
@@ -262,7 +264,6 @@ def train_one_epoch(
 
     print_freq = args.get("print_freq", 100) if not args.debug else 1
     num_batches = epoch_num_batches if not args.debug else 10
-
     amp_dtype = getattr(torch, args.amp_dtype)
     use_cuda = device.type == "cuda"
     if use_cuda and args.presend_cuda:
@@ -301,14 +302,12 @@ def train_one_epoch(
                     img_mask=img_mask,
                     mask_ratio=args.mask_ratio,
                     pred_mask_ratio=args.pred_mask_ratio,
+                    pad_to_multiple=args.pad_to_multiple,
                     with_state=False,
                 )
 
-            loss_value = loss.detach().float().item()
-            if not math.isfinite(loss_value):
-                raise RuntimeError(f"Loss is {loss_value}, stopping training")
-            batch_size = int(batch["img_mask"].shape[0])
-            metric_logger.meters["loss"].update(loss_value, n=batch_size)
+            loss_for_log = loss.detach()
+            torch._assert_async(torch.isfinite(loss_for_log), "non-finite loss")
 
             grad_norm = ut.backward_step(
                 loss / group_size,
@@ -318,17 +317,17 @@ def train_one_epoch(
                 max_norm=args.clip_grad,
             )
 
-        if need_update:
+        if need_update and log_step:
+            loss_value = loss_for_log.item()
             grad_norm_value = grad_norm.item()
-            metric_logger.update(lr=lr, grad=grad_norm_value)
-            if log_wandb and log_step:
-                wandb_stats = {
-                    "train/loss": metric_logger.meters["loss"].global_avg,
-                    "train/lr": lr,
-                    "train/grad": grad_norm_value,
-                }
+            metric_logger.update(loss=loss_value, lr=lr, grad=grad_norm_value)
+            if log_wandb:
                 wandb.log(
-                    wandb_stats,
+                    {
+                        "train/loss": loss_value,
+                        "train/lr": lr,
+                        "train/grad": grad_norm_value,
+                    },
                     step=int(1000 * (epoch + batch_step / epoch_num_batches)),
                 )
 
@@ -394,6 +393,7 @@ def evaluate(
                 img_mask=img_mask,
                 mask_ratio=args.mask_ratio,
                 pred_mask_ratio=args.pred_mask_ratio,
+                pad_to_multiple=args.pad_to_multiple,
             )
 
         loss_value = loss.detach().float().item()
