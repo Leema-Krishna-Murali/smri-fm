@@ -199,6 +199,12 @@ def train(args: argparse.Namespace) -> None:
     method.fit(rows)
     method.save(run_dir / "model")
 
+    preds = [
+        {"subject": row["subject"], "label": int(label), "pred": float(pred)}
+        for row, label, pred in zip(rows, y, oof)
+    ]
+    (run_dir / "preds.json").write_text("".join(json.dumps(pred) + "\n" for pred in preds))
+
     record = {"name": cfg.name, **summary, "run_time": round(run_time, 1)}
     (run_dir / "metrics.json").write_text(json.dumps(record) + "\n")
     scores = "  ".join(f"{k}={v:.4f}" for k, v in summary.items())
