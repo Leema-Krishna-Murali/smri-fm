@@ -10,8 +10,8 @@ For the final FOMO26 push, we are working exclusively in [`src/fomo_tune/`](src/
 ## Installation
 
 ```bash
-git clone -b fomo_tune --recurse-submodules https://github.com/MedARC-AI/smri-fm fomo_tune
-cd fomo_tune
+git clone --recurse-submodules https://github.com/MedARC-AI/smri-fm
+cd smri-fm
 uv sync
 uv run pre-commit install --install-hooks
 ```
