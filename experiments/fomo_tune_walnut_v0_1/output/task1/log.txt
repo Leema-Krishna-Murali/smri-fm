@@ -1,0 +1,33 @@
+21:08:37 run task1 (git ead1264)
+21:08:37 config:
+task: task1
+ckpt_path: hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth
+modalities:
+- dwi_b1000
+output_root: experiments/fomo_tune_walnut_v0_1/output
+name: task1
+device: cuda
+seed: 4466
+21:08:39 dataset: 21 subjects, 13 positive
+21:08:48 fold 1/21 sub-01 y=1 p=0.508 (4s)
+21:08:48 fold 2/21 sub-02 y=1 p=0.504 (4s)
+21:08:49 fold 3/21 sub-03 y=0 p=0.492 (5s)
+21:08:49 fold 4/21 sub-04 y=1 p=0.489 (5s)
+21:08:49 fold 5/21 sub-05 y=1 p=0.526 (5s)
+21:08:50 fold 6/21 sub-06 y=1 p=0.496 (6s)
+21:08:50 fold 7/21 sub-07 y=0 p=0.497 (6s)
+21:08:50 fold 8/21 sub-08 y=0 p=0.486 (6s)
+21:08:51 fold 9/21 sub-09 y=1 p=0.506 (7s)
+21:08:51 fold 10/21 sub-10 y=1 p=0.517 (7s)
+21:08:51 fold 11/21 sub-11 y=0 p=0.481 (8s)
+21:08:52 fold 12/21 sub-12 y=0 p=0.474 (8s)
+21:08:52 fold 13/21 sub-13 y=1 p=0.505 (8s)
+21:08:53 fold 14/21 sub-14 y=1 p=0.541 (9s)
+21:08:53 fold 15/21 sub-15 y=0 p=0.499 (9s)
+21:08:53 fold 16/21 sub-16 y=0 p=0.486 (9s)
+21:08:54 fold 17/21 sub-17 y=1 p=0.521 (10s)
+21:08:54 fold 18/21 sub-18 y=1 p=0.512 (10s)
+21:08:54 fold 19/21 sub-19 y=1 p=0.518 (10s)
+21:08:55 fold 20/21 sub-20 y=1 p=0.523 (11s)
+21:08:55 fold 21/21 sub-21 y=0 p=0.509 (11s)
+21:08:57 result: auroc=0.8942  auroc_ci_low=0.7308  auroc_ci_high=1.0000  (11s)

@@ -1,0 +1,6 @@
+task: task3
+ckpt_path: hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth
+output_root: experiments/fomo_tune_walnut_v0_1/output
+name: task3
+device: cuda
+seed: 4466

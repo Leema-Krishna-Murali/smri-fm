@@ -1,0 +1,30 @@
+21:11:08 run task3 (git ead1264)
+21:11:08 config:
+task: task3
+ckpt_path: hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth
+output_root: experiments/fomo_tune_walnut_v0_1/output
+name: task3
+device: cuda
+seed: 4466
+21:12:11 dataset: 494 subjects, age 19-80 mean 45.2
+21:14:22 fold 1/20 n=25 mae=3.34 (127s)
+21:14:35 fold 2/20 n=25 mae=4.58 (140s)
+21:14:42 fold 3/20 n=25 mae=3.22 (147s)
+21:14:49 fold 4/20 n=25 mae=3.67 (154s)
+21:14:56 fold 5/20 n=25 mae=3.91 (161s)
+21:15:02 fold 6/20 n=25 mae=3.25 (167s)
+21:15:09 fold 7/20 n=25 mae=3.77 (174s)
+21:15:16 fold 8/20 n=25 mae=2.68 (181s)
+21:15:22 fold 9/20 n=25 mae=4.11 (188s)
+21:15:29 fold 10/20 n=25 mae=3.75 (195s)
+21:15:36 fold 11/20 n=25 mae=3.21 (201s)
+21:15:43 fold 12/20 n=25 mae=3.67 (208s)
+21:15:50 fold 13/20 n=25 mae=2.78 (215s)
+21:15:57 fold 14/20 n=25 mae=3.46 (222s)
+21:16:03 fold 15/20 n=24 mae=3.97 (228s)
+21:16:10 fold 16/20 n=24 mae=3.65 (235s)
+21:16:16 fold 17/20 n=24 mae=3.38 (241s)
+21:16:23 fold 18/20 n=24 mae=3.53 (248s)
+21:16:29 fold 19/20 n=24 mae=3.30 (255s)
+21:16:36 fold 20/20 n=24 mae=2.84 (261s)
+21:16:36 result: pearson_r=0.9680  pearson_r_ci_low=0.9628  pearson_r_ci_high=0.9724  mae=3.5045  mae_ci_low=3.2891  mae_ci_high=3.7431  (261s)

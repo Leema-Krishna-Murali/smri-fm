@@ -80,6 +80,7 @@ uv run python third_party/container-validator/container_validator/validate.py \
 | Run | AUROC | 95% CI | Time | Git | Notes |
 |---|---|---|---|---|---|
 | baseline | 0.990 | 0.944 – 1.000 | 11s | `1df2e5d`† | dwi_b1000 only, `LogisticRegressionCV` |
+| walnut-v0.1 | 0.894 | 0.731 – 1.000 | 11s | `ead1264` | vitl/sub-52k checkpoint, baseline otherwise |
 
 ### Task 2 — meningioma, Dice, LOO over 23
 
@@ -87,6 +88,7 @@ uv run python third_party/container-validator/container_validator/validate.py \
 |---|---|---|---|---|---|---|
 | baseline | 0.195 | 0.098 – 0.303 | 0.271 | 174s | `7d13f45` | flair only, largest-component filter, threshold 0.011 |
 | no largest component | 0.170 | 0.082 – 0.266 | 0.226 | 132s | `7508a46`-dirty | threshold 0.085 |
+| walnut-v0.1 | 0.195 | 0.092 – 0.306 | 0.234 | 173s | `ead1264` | vitl/sub-52k checkpoint, baseline otherwise, threshold 0.018 |
 
 Oracle is the per-subject best threshold — the ceiling any thresholding rule could reach.
 
@@ -95,12 +97,14 @@ Oracle is the per-subject best threshold — the ceiling any thresholding rule c
 | Run | Pearson r | 95% CI | MAE (y) | 95% CI | Time | Git | Notes |
 |---|---|---|---|---|---|---|---|
 | baseline | 0.963 | 0.957 – 0.969 | 3.69 | 3.45 – 3.95 | 306s | `1df2e5d`† | t1w, `RidgeCV` head |
+| walnut-v0.1 | 0.968 | 0.963 – 0.972 | 3.50 | 3.29 – 3.74 | 261s | `ead1264` | vitl/sub-52k checkpoint, baseline otherwise |
 
 ### Task 5 — polymicrogyria, AUROC, 20-fold over 48
 
 | Run | AUROC | 95% CI | Time | Git | Notes |
 |---|---|---|---|---|---|
 | baseline | 0.984 | 0.953 – 1.000 | 68s | `1df2e5d`† | t1w, `LogisticRegressionCV` |
+| walnut-v0.1 | 0.995 | 0.979 – 1.000 | 69s | `ead1264` | vitl/sub-52k checkpoint, baseline otherwise |
 
 Shas marked † predate this branch split.
 
