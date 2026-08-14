@@ -1,27 +1,21 @@
 # explore_fomo_task4
 
-Task 4 has no script yet. Before writing one: what are the two structures, and where does a model
-have to be pointed to see them? Everything is measured on the native 0.5mm grid, because the
-structures are ~2mm thick and the 1mm transform is not a frame you can look at them in.
+Task 4 has no script yet. What are the two structures, and where does a model have to be pointed to
+see them? Measured on the native 0.5mm grid — they are ~2mm thick, so the 1mm transform is not a
+frame you can look at them in.
 
 ```bash
 uv run python explore.py     # -> explore.tsv, figures/*.png, npz crops in output/cache
 ```
 
-## 1. The cohort is one protocol, and the labels are strictly bilateral
+## The structures
 
 All 40 subjects are `(360, 512, 512)` at `0.500 x 0.488 x 0.488`mm, RAS, seg affine equal to the
-image affine. Volumes are a few degrees oblique (up to 4°) but rigid, so index distances scaled by
-the zooms are true mm.
+image affine, a few degrees oblique but rigid. **Label 1 has exactly two components in every
+subject** — one nerve per side. Label 2 has 2 to 5, one vessel per side entering and leaving the
+labelled slab. That matches the challenge's `1=nerve, 2=vessel`.
 
-**Label 1 has exactly two components in every subject** — one nerve per side, under 26-connectivity.
-Label 2 has 2 to 5, which is one vessel per side entering and leaving the labelled slab. `1=nerve,
-2=vessel` is stated by the challenge (`third_party/fomo_submission.md`), and the data agrees with
-it: the two-per-subject structure is the nerve's, and the fragmenting one wraps the brainstem.
-
-## 2. The structures are ~2mm thick and always in contact
-
-Over 80 sides, median [min, max]:
+Over 80 sides:
 
 | | median | range |
 |---|---|---|
@@ -31,24 +25,24 @@ Over 80 sides, median [min, max]:
 | nerve mean cross extent | 2.07 mm | 1.03 – 3.71 |
 | nerve-to-vessel minimum distance | 0.92 mm | 0.49 – 3.41 |
 
-**The nerve runs anterior-posterior, not superior-inferior.** The principal axis has |A| = 0.98
-median against |R| = 0.09 and |S| = 0.18. It is the cisternal segment of CN V leaving the lateral
-pons, about 10mm long and 4 voxels across.
+**The nerve runs anterior-posterior, not superior-inferior**: |A| = 0.98 against |R| = 0.09 and
+|S| = 0.18. The vessel has no such preference (|A| = 0.75, |R| = 0.34, |S| = 0.32) and sprawls
+7.5 x 11.7 x 8.1mm as it wraps the brainstem, which is why it fragments.
 
-**Nerve and vessel touch.** 30 of 80 sides have them in adjacent voxels and none is more than
-3.4mm apart, which is the point of the task — the labels are drawn where there is neurovascular
-contact.
+**Nerve and vessel touch** — 30 of 80 sides in adjacent voxels, never more than 3.4mm apart. That
+is the point of the task.
 
-Two things worth noting before they surprise us later. The left nerve is consistently the larger
-one (median 21.6 mm³ against 15.1), which is either laterality in the annotation or in the cohort.
-And **intensity does not separate the two classes**: on a scale where 0 is the local median and 1
-the local 95th percentile, the nerve sits at 0.08 and the vessel at 0.06, and the vessel is the
-darker of the pair on only 33 of 80 sides. The pictures agree — what tells them apart is shape and
-course, not brightness. Both are far below CSF, which is what the cistern around them is.
+**Intensity barely separates the classes.** On a scale where 0 is the local median and 1 the local
+95th percentile, nerve sits at 0.14 and vessel at 0.09, and the vessel is the darker of the two on
+48 of 80 sides — a coin flip's worth of margin over the 40 that chance gives. Shape and course tell
+them apart, not brightness.
 
-## 3. A free anchor cuts the crop 2.7x, and still leaves ±10mm
+The left nerve is consistently the larger (median 21.6 mm³ against 15.1) — laterality in the
+annotation or in the cohort, unexplained.
 
-The label centroid moves a long way across subjects. Within side, in mm:
+## Where they are
+
+Spread of the nerve centroid across subjects, within side, in mm:
 
 | placement rule | sd (R, A, S) | range (R, A, S) |
 |---|---|---|
@@ -56,11 +50,7 @@ The label centroid moves a long way across subjects. Within side, in mm:
 | centred on the mask centroid | 1.5, 3.7, 4.5 | 7.3, 23.8, 22.2 |
 | centred on the mask bounding box | 1.9, 4.9, 3.8 | 9.3, 27.2, 18.0 |
 
-The mask is the same `data > data.mean()` the transform uses, computed on the native volume, so it
-is free and label-free — available at inference on one image.
-
-Turned into the crop that a model would actually be handed, the smallest box holding all 40
-subjects' labels:
+As the crop a model would be handed — the smallest box holding all 40 subjects' labels:
 
 | placement rule | box | volume |
 |---|---|---|
@@ -68,38 +58,24 @@ subjects' labels:
 | centred on the mask centroid | 114 x 70 x 72 | 69 mL |
 | centred on the mask bounding box | 117 x 76 x 63 | 67 mL |
 
-**So the anchor is worth taking: 2.7x less volume to process, for one mean and one centroid.**
-The R axis does not shrink, because it is already tight — heads are well centred left-right and the
-gap between the two sides is anatomy, not positioning.
+The mask is the same `data > data.mean()` the transform uses, so the anchor is free and label-free.
+**Worth taking: 2.7x less volume for one mean and one centroid.** R does not shrink because it is
+already tight — heads are centred left-right and the gap between sides is anatomy.
 
-What the anchor does *not* do is make position informative on its own. ±10mm of residual against a
-2mm-thick structure means a fixed mask, or a probabilistic atlas in this frame, cannot be a
-baseline worth beating. Anything that works will have to find the structures in the image.
+It does not make position informative on its own. ±10mm of residual against a 2mm structure means
+no fixed mask or atlas prior in this frame is a baseline worth beating.
 
 ## The figures
 
-- `subjects.png` — 40 subjects, two rows each, plain over annotated, 8 axial slices spanning the
-  labelled slab, over the full fixed crop box. Context: pons, cistern, temporal bone.
-- `zoom.png` — same layout cropped to the labels with 20 voxels of margin, windowed per panel.
-  The vessel curving around the brainstem across many slices is clearest here, and it is why label
-  2 fragments.
-- `planes.png` — axial, coronal and sagittal through each nerve centroid, per side, all 40. This
-  is the one to read to see what the structures are: the nerve is a mid-grey band crossing bright
-  CSF, the vessel a dark flow void alongside it.
+- `subjects.png` — axial, 8 slices over the whole crop box, plain over annotated. The only plane
+  holding both sides, the pons and the cistern in one panel.
+- `zoom.png` — sagittal, 8 consecutive slices per side, windowed per panel. The nerve drifts out of
+  sagittal by 0.94mm over its length, against 1.54mm axial and 9.28mm coronal, so it stays a
+  continuous band; vessel-above-or-below-nerve is also a sagittal relation.
+- `planes.png` — three planes through each nerve, per side. Read this one to see what the
+  structures are: the nerve a mid-grey band crossing bright CSF, the vessel a dark flow void.
 - `geometry.png` — the scalars above.
 
-## How the numbers are computed
-
-Sides are the two nerve components, ordered by mean R. Each vessel component is assigned to the
-nearer nerve by centroid distance, so `vessel_voxels` is per side and not per component.
-
-`length` and `thickness` are extents along the eigenvectors of the component's voxel coordinates in
-mm, longest first; thickness averages the two short axes. `contact_mm` is a `cKDTree` nearest
-neighbour from nerve voxels to vessel voxels, so 0.49 means adjacent voxels.
-
-Intensity is quoted against a local box, the side's label bounding box grown by 10 voxels, since the
-volumes have no common scale. The few strongly negative values are sides where that box is mostly
-bone and air and its median sits above the tissue the labels are in.
-
-The crop cache is built from a fixed box that does not consult the labels, and `cache_subject`
-asserts that every labelled voxel falls inside it.
+Sides are the two nerve components ordered by mean R, with each vessel component assigned to the
+nearer nerve, so the table is per side and not per component. Intensity is quoted against the
+side's label bounding box grown by 10 voxels, since the volumes have no common scale.

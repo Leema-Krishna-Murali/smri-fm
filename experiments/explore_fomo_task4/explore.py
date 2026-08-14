@@ -83,7 +83,8 @@ def cache_subject(subject: str) -> None:
 
     np.savez_compressed(
         CACHE_DIR / f"{subject}.npz",
-        image=data[window].astype(np.int16),
+        # float32, not int16: nibabel's scaling takes 12 of the 40 above the int16 range
+        image=data[window],
         seg=labels[window],
         zooms=zooms,
         crop_origin=np.array([w.start for w in window]),
@@ -175,6 +176,7 @@ def measure_subject(subject: str) -> list[dict]:
                 "nerve_mm3": float(len(nerve) * np.prod(zooms)),
                 "vessel_mm3": float(len(vessel) * np.prod(zooms)),
                 **shape_stats(nerve, zooms),
+                **{f"vessel_{k}": v for k, v in shape_stats(vessel, zooms).items()},
                 "contact_mm": float(
                     cKDTree(vessel * zooms).query(nerve * zooms)[0].min() if len(vessel) else np.nan
                 ),
@@ -242,6 +244,9 @@ def report_spread(table: pd.DataFrame) -> None:
         "axis_r",
         "axis_a",
         "axis_s",
+        "vessel_axis_r",
+        "vessel_axis_a",
+        "vessel_axis_s",
         "nerve_contrast",
         "vessel_contrast",
     ):
@@ -302,32 +307,18 @@ def slice_columns(seg: np.ndarray) -> np.ndarray:
     return np.linspace(z.min(), z.max(), N_SLICES).round().astype(int)
 
 
-def figure_grid(name: str, zoom: bool) -> None:
-    """Two rows per subject, plain over annotated, axial slices spanning the labelled slab."""
+def figure_subjects() -> None:
+    """Context: two rows per subject, plain over annotated, axial over the whole crop box."""
     names = subjects()
     fig, axes = plt.subplots(
-        2 * len(names),
-        N_SLICES,
-        figsize=((2.0 if zoom else 1.5) * N_SLICES, (1.3 if zoom else 1.5) * 2 * len(names)),
-        squeeze=False,
+        2 * len(names), N_SLICES, figsize=(1.5 * N_SLICES, 1.5 * 2 * len(names)), squeeze=False
     )
     for s, subject in enumerate(names):
         cached = load(subject)
         image, seg = cached["image"].astype(np.float32), cached["seg"]
-        columns = slice_columns(seg)
+        limits = window(image)
 
-        if zoom:
-            foreground = np.argwhere(seg > 0)
-            lo = np.maximum(foreground.min(axis=0) - ZOOM_MARGIN, 0)
-            hi = np.minimum(foreground.max(axis=0) + ZOOM_MARGIN, image.shape)
-            image = image[lo[0] : hi[0], lo[1] : hi[1]]
-            seg = seg[lo[0] : hi[0], lo[1] : hi[1]]
-        else:
-            limits = window(image)
-
-        for c, k in enumerate(columns):
-            if zoom:
-                limits = window(image[:, :, k])
+        for c, k in enumerate(slice_columns(seg)):
             draw(axes[2 * s][c], image[:, :, k], None, limits)
             draw(axes[2 * s + 1][c], image[:, :, k], seg[:, :, k], limits)
             axes[2 * s][c].set_title(f"z={k}", fontsize=5)
@@ -335,7 +326,61 @@ def figure_grid(name: str, zoom: bool) -> None:
         axes[2 * s + 1][0].set_ylabel("+ seg", fontsize=6)
 
     fig.tight_layout()
-    fig.savefig(OUT_DIR / f"figures/{name}.png", dpi=100, bbox_inches="tight")
+    fig.savefig(OUT_DIR / "figures/subjects.png", dpi=100, bbox_inches="tight")
+    plt.close(fig)
+
+
+def side_labels(seg: np.ndarray, zooms: np.ndarray) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """Each side's nerve component, and it together with the vessels nearest to it."""
+    nerves, n_nerves = ndimage.label(seg == 1, structure=CONNECTIVITY)
+    vessels, n_vessels = ndimage.label(seg == 2, structure=CONNECTIVITY)
+    nerve_coords = {i: np.argwhere(nerves == i) for i in range(1, n_nerves + 1)}
+    sides = sorted(nerve_coords, key=lambda i: -len(nerve_coords[i]))[:2]
+    sides = sorted(sides, key=lambda i: nerve_coords[i][:, 0].mean())
+    centres = {i: nerve_coords[i].mean(axis=0) * zooms for i in sides}
+
+    grouped = {i: [nerve_coords[i]] for i in sides}
+    for vessel_id in range(1, n_vessels + 1):
+        coords = np.argwhere(vessels == vessel_id)
+        centre = coords.mean(axis=0) * zooms
+        grouped[min(sides, key=lambda i: np.linalg.norm(centre - centres[i]))].append(coords)
+    return [
+        (name, nerve_coords[i], np.concatenate(grouped[i]))
+        for name, i in zip(("left", "right"), sides)
+    ]
+
+
+def figure_zoom() -> None:
+    """Sagittal, one column group per side: the plane the nerve stays inside for its length."""
+    names = subjects()
+    fig, axes = plt.subplots(
+        2 * len(names),
+        2 * N_SLICES,
+        figsize=(1.3 * 2 * N_SLICES, 1.4 * 2 * len(names)),
+        squeeze=False,
+    )
+    for s, subject in enumerate(names):
+        cached = load(subject)
+        image, seg = cached["image"].astype(np.float32), cached["seg"]
+
+        for side, (name, nerve, coords) in enumerate(side_labels(seg, cached["zooms"])):
+            lo = np.maximum(coords.min(axis=0) - ZOOM_MARGIN, 0)
+            hi = np.minimum(coords.max(axis=0) + ZOOM_MARGIN, image.shape)
+            centre = int(round(nerve[:, 0].mean()))
+            columns = centre + np.arange(N_SLICES) - N_SLICES // 2
+
+            for c, k in enumerate(np.clip(columns, 0, image.shape[0] - 1)):
+                plane = image[k, lo[1] : hi[1], lo[2] : hi[2]]
+                seg_plane = seg[k, lo[1] : hi[1], lo[2] : hi[2]]
+                column = side * N_SLICES + c
+                draw(axes[2 * s][column], plane, None, window(plane))
+                draw(axes[2 * s + 1][column], plane, seg_plane, window(plane))
+                axes[2 * s][column].set_title(f"{name[0]} x={k}", fontsize=5)
+        axes[2 * s][0].set_ylabel(f"{subject}\nt2w", fontsize=6)
+        axes[2 * s + 1][0].set_ylabel("+ seg", fontsize=6)
+
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "figures/zoom.png", dpi=100, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -440,8 +485,8 @@ def main() -> None:
     table.to_csv(OUT_DIR / "explore.tsv", sep="\t", index=False, float_format="%.3f")
     report_spread(table)
     report_boxes()
-    figure_grid("subjects", zoom=False)
-    figure_grid("zoom", zoom=True)
+    figure_subjects()
+    figure_zoom()
     figure_planes(table)
     figure_geometry(table)
 
