@@ -65,6 +65,23 @@ already tight — heads are centred left-right and the gap between sides is anat
 It does not make position informative on its own. ±10mm of residual against a 2mm structure means
 no fixed mask or atlas prior in this frame is a baseline worth beating.
 
+## The box to hand a model
+
+**128 x 96 x 96 voxels at 0.5mm (64 x 47 x 47 mm), centred (0, +4, −16) voxels from the subject's
+own mask centroid.** A 99%-coverage, 95%-confidence normal tolerance box over the label extremes
+is 117 x 84 x 89; this clears that on every axis, stays a multiple of 16, and holds all 40
+subjects with 3.2 / 6.3 / 4.9 mm to spare. Widen R to 144 for 7.2mm there, at 158 mL.
+
+One box over both sides rather than one per side. Per-side would be 64 x 96 x 96 at the same A and
+S, so the same total voxels and the same class imbalance, trading a half-size tensor and n=80 for
+a left/right convention to get wrong.
+
+The labels are **121 mm³ inside 141 mL, about 1 voxel in 1200**, whichever way it is cut.
+
+```bash
+uv run python model_box.py     # -> figures/model_box.png
+```
+
 ## The figures
 
 - `subjects.png` — axial, 8 slices over the whole crop box, plain over annotated. The only plane
@@ -74,6 +91,10 @@ no fixed mask or atlas prior in this frame is a baseline worth beating.
   continuous band; vessel-above-or-below-nerve is also a sagittal relation.
 - `planes.png` — three planes through each nerve, per side. Read this one to see what the
   structures are: the nerve a mid-grey band crossing bright CSF, the vessel a dark flow void.
+- `model_box.png` — six subjects spanning the hard cases, three rows each: the head with the box
+  outlined, the box, the box with labels. In-plane the panels are exactly the model's input; the
+  slices are picked around each side's nerve, which inference cannot do, so read the through-plane
+  sampling as optimistic.
 - `geometry.png` — the scalars above.
 
 Sides are the two nerve components ordered by mean R, with each vessel component assigned to the
