@@ -1,0 +1,511 @@
+"""FOMO task 4: trigeminal nerve and vessel segmentation.
+
+Method (tune):
+
+1. Scale 0.5mm input to a target resolution (scale = 1, 2, 3 = 1mm, 0.5mm, 0.33mm), and
+   crop around an anchor relative to the subject's mask centroid.
+2. Extract patch features.
+3. Ridge regression head predicting "subcell" targets. At `subcell=8`, you get a
+   separate prediction per voxel.
+
+The rationale is that the structures are ~2mm, so one prediction per 8mm patch will be
+too coarse. Too address this, we have two strategies: upscaling the model input, and
+making sub-patch predictions.
+
+Protocol (fixed):
+
+- Leave one subject out over the 40.
+- Per-label Dice at every threshold in a fixed grid.
+- Choose the global threshold to maximize mean dice over out-of-fold subjects.
+- Reported with a bootstrap CI over subjects, alongside the per-subject oracle cut.
+"""
+
+import argparse
+import json
+import logging
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import NamedTuple
+
+import joblib
+import nibabel as nib
+import numpy as np
+import torch
+from einops import rearrange, reduce, repeat
+from omegaconf import OmegaConf
+from scipy import ndimage
+from sklearn.linear_model import RidgeCV
+from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+from fomo_tune.backbone import load_backbone, rescale
+from fomo_tune.utils import git_sha, set_seed, setup_logging
+
+logger = logging.getLogger("fomo_tune")
+
+Images = dict[str, nib.Nifti1Image]
+
+MODALITY = "t2w"
+LABELS = (1, 2)
+LABEL_NAMES = ("nerve", "vessel")
+
+# mm from the brain-mask centroid to the trigeminal region: an anatomical offset, so it scales with
+# the voxel. Zeroing it centres the canvas on the brain.
+ANCHOR_OFFSET_MM = (0.0, 2.0, -8.0)
+
+# voxels from the canvas centre to where the pretrained frame puts that region: a position in the
+# patch grid, so it does not scale. Zeroing it centres the region in the canvas.
+CANVAS_CENTRE_VOXELS = (0.0, -9.4, -5.2)
+
+
+@dataclass
+class Config:
+    task: str = "task4"
+    ckpt_path: str = "hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth"
+    output_root: str = "output/fomo_tune"
+    name: str = "task4"
+    scale: int = 2
+    subcell: int = 4
+    target_sigma_mm: float = 0.0
+    block: int | None = None
+    alphas: list[float] = field(default_factory=lambda: [1e1, 1e2, 1e3, 1e4, 1e5, 1e6])
+    device: str = "cuda"
+    seed: int = 4466
+
+
+# ---- geometry -----------------------------------------------------------------------------
+
+
+def repack(img: nib.Nifti1Image) -> nib.Nifti1Image:
+    """Round-trip through nibabel: the HF Nifti wrapper's own reorientation is not trustworthy."""
+    return nib.Nifti1Image(img.dataobj, img.affine, img.header)
+
+
+def resample_nearest(
+    volume: np.ndarray, source_affine: np.ndarray, target_affine: np.ndarray, target_shape: tuple
+) -> np.ndarray:
+    """`volume` read at every voxel of the target grid, nearest neighbour, zero outside it."""
+    target_to_source = np.linalg.inv(source_affine) @ target_affine
+    matrix = target_to_source[:3, :3]
+    offset = target_to_source[:3, 3]
+    return ndimage.affine_transform(
+        volume, matrix, offset, output_shape=target_shape, order=0, mode="constant", cval=0.0
+    )
+
+
+# ---- method: the part we tune ---------------------------------------------------------------
+
+
+class Patches(NamedTuple):
+    """One subject's tokens and the label fractions of every sub-cell of every token."""
+
+    features: np.ndarray  # (n_patches, dim)
+    patch_ids: np.ndarray  # (n_patches,) indices into the flattened patch grid
+    targets: np.ndarray  # (n_patches, n_labels * subcell ** 3)
+
+
+def fit_head(features: np.ndarray, targets: np.ndarray, alphas: list[float]) -> Pipeline:
+    """One ridge from a token to every sub-cell's label fraction, alpha shared over outputs."""
+    head = make_pipeline(StandardScaler(), RidgeCV(alphas=alphas))
+    head.fit(features, targets)
+    return head
+
+
+class Task4Method:
+    """Frozen sMRI MAE over a rescaled crop, one ridge decoding each token to its sub-cells."""
+
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self.backbone, _ = load_backbone(cfg.ckpt_path)
+        self.device = torch.device(cfg.device)
+        self.backbone.to(self.device).eval().requires_grad_(False)
+
+        patchify = self.backbone.encoder.patchify
+        self.grid_size = tuple(patchify.grid_size)
+        self.patch_size = tuple(patchify.patch_size)
+        self.img_size = tuple(patchify.img_size)
+
+        self.subcell = cfg.subcell
+        self.cell_size = tuple(size // cfg.subcell for size in self.patch_size)
+        assert all(size % cfg.subcell == 0 for size in self.patch_size), (
+            f"subcell {cfg.subcell} does not divide patch {self.patch_size}"
+        )
+
+        self.cache: dict[str, Patches] = {}
+        self.head = None
+        self.threshold = None
+
+    def prepare(self, image: nib.Nifti1Image) -> dict[str, torch.Tensor]:
+        """One volume at `1 / scale` mm, cropped to the canvas around the subject's own anchor."""
+        image = nib.as_closest_canonical(nib.funcs.squeeze_image(repack(image)))
+        volume = torch.from_numpy(np.ascontiguousarray(image.get_fdata(dtype=np.float32)))
+        assert volume.ndim == 3, f"expected a 3D volume, got {tuple(volume.shape)}"
+
+        affine = np.asarray(image.affine)
+        spacing = tuple(float(zoom) for zoom in image.header.get_zooms()[:3])
+        target = 1.0 / self.cfg.scale
+        if max(abs(size - target) for size in spacing) > 0.05:
+            volume, affine = rescale(volume, affine, spacing, (target,) * 3)
+        voxel_mm = np.linalg.norm(affine[:3, :3], axis=0)
+
+        data = volume.numpy()
+        head_mask = data > data.mean()
+        brain = data[head_mask]
+        mean, std = brain.mean(), max(brain.std(), 1e-6)
+
+        centroid = np.array(ndimage.center_of_mass(head_mask))
+        assert (np.abs(centroid / np.array(data.shape) - 0.5) < 1 / 6).all(), (
+            f"brain-mask centroid {centroid.round(1)} is not near the middle of {data.shape}"
+        )
+        anchor = centroid + np.array(ANCHOR_OFFSET_MM) / voxel_mm
+        start = np.round(
+            anchor - np.array(self.img_size) / 2 - np.array(CANVAS_CENTRE_VOXELS)
+        ).astype(int)
+
+        source_lo = np.maximum(start, 0)
+        source_hi = np.minimum(start + np.array(self.img_size), data.shape)
+        assert (source_hi > source_lo).all(), "the canvas does not overlap the volume"
+        source = tuple(slice(a, b) for a, b in zip(source_lo, source_hi))
+        placed = tuple(slice(a, b) for a, b in zip(source_lo - start, source_hi - start))
+
+        canvas = np.zeros(self.img_size, dtype=np.float32)
+        mask = np.zeros(self.img_size, dtype=bool)
+        mask[placed] = head_mask[source]
+        canvas[placed] = np.where(head_mask[source], (data[source] - mean) / std, 0.0)
+
+        # canvas voxel k holds resampled voxel k + start, a pure integer translation
+        step = np.eye(4)
+        step[:3, 3] = start
+        return {
+            "image": torch.from_numpy(canvas).unsqueeze(0),
+            "mask": torch.from_numpy(mask).unsqueeze(0),
+            "affine": torch.as_tensor(affine @ step, dtype=torch.float32),
+        }
+
+    @torch.inference_mode()
+    def embed(self, images: Images) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The kept tokens' features and grid indices, and the affine of the grid they live on."""
+        sample = self.prepare(images[MODALITY])
+        batch = {key: value[None].to(self.device) for key, value in sample.items()}
+
+        encoder = self.backbone.encoder
+        captured = []
+        handle = None
+        if self.cfg.block is not None:
+            handle = encoder.blocks[self.cfg.block].register_forward_hook(
+                lambda module, args, output: captured.append(output)
+            )
+        try:
+            with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
+                out = self.backbone(batch)
+        finally:
+            if handle is not None:
+                handle.remove()
+
+        # batch size 1 leaves no padded token slots, which the block hook's flat slice relies on
+        assert out["token_mask"].all(), "the token sequence is padded"
+        if self.cfg.block is None:
+            features = out["patch_embeds"][0]
+        else:
+            # batch size 1, so the jagged pack is one flat sequence behind the prefix tokens
+            features = captured[0][encoder.num_prefix_tokens :]
+
+        return (
+            features.float().cpu().numpy(),
+            out["patch_ids"][0].cpu().numpy(),
+            sample["affine"].numpy(),
+        )
+
+    def cell_targets(self, seg: nib.Nifti1Image, grid_affine: np.ndarray) -> np.ndarray:
+        """Each label's fraction of every sub-cell, over the whole grid, in flattened order."""
+        seg = repack(seg)
+        labels = np.asarray(seg.dataobj, dtype=np.float32).round()
+        on_grid = resample_nearest(labels, seg.affine, grid_affine, self.img_size)
+
+        voxel_mm = np.linalg.norm(grid_affine[:3, :3], axis=0).mean()
+        gx, gy, gz = self.grid_size
+        cx, cy, cz = self.cell_size
+
+        fractions = []
+        for value in LABELS:
+            field_ = (on_grid == value).astype(np.float32)
+            if self.cfg.target_sigma_mm > 0:
+                field_ = ndimage.gaussian_filter(field_, self.cfg.target_sigma_mm / voxel_mm)
+            fractions.append(
+                reduce(
+                    field_,
+                    "(gx sx cx) (gy sy cy) (gz sz cz) -> (gx gy gz) (sx sy sz)",
+                    "mean",
+                    gx=gx,
+                    gy=gy,
+                    gz=gz,
+                    sx=self.subcell,
+                    sy=self.subcell,
+                    sz=self.subcell,
+                    cx=cx,
+                    cy=cy,
+                    cz=cz,
+                )
+            )
+        return rearrange(np.stack(fractions), "label patch cell -> patch (label cell)")
+
+    def cached_patches(self, row: dict) -> Patches:
+        """Cached: leave-one-out revisits every subject n times."""
+        if row["subject"] not in self.cache:
+            features, patch_ids, grid_affine = self.embed(row)
+            targets = self.cell_targets(row["seg"], grid_affine)
+            self.cache[row["subject"]] = Patches(features, patch_ids, targets[patch_ids])
+        return self.cache[row["subject"]]
+
+    def fit(self, rows: list[dict]) -> None:
+        subjects = [self.cached_patches(row) for row in rows]
+        features = np.concatenate([subject.features for subject in subjects])
+        targets = np.concatenate([subject.targets for subject in subjects])
+        self.head = fit_head(features, targets, list(self.cfg.alphas))
+
+    def predict_scores(self, images: Images) -> nib.Nifti1Image:
+        """Per-label score per voxel on the input's own grid, constant within each sub-cell.
+
+        The prediction is carried out to the input rather than the truth carried in: at `scale=1` a
+        cell is larger than a label voxel, and scoring on the model's grid would credit a cell-sized
+        prediction with matching a voxel-sized label.
+        """
+        features, patch_ids, grid_affine = self.embed(images)
+
+        predicted = self.head.predict(features)
+        scores = np.zeros(
+            (int(np.prod(self.grid_size)), len(LABELS), self.subcell**3), dtype=np.float32
+        )
+        scores[patch_ids] = rearrange(
+            predicted, "patch (label cell) -> patch label cell", label=len(LABELS)
+        )
+
+        gx, gy, gz = self.grid_size
+        cx, cy, cz = self.cell_size
+        on_grid = rearrange(
+            scores,
+            "(gx gy gz) label (sx sy sz) -> label gx sx gy sy gz sz",
+            gx=gx,
+            gy=gy,
+            gz=gz,
+            sx=self.subcell,
+            sy=self.subcell,
+            sz=self.subcell,
+        )
+        on_grid = repeat(
+            on_grid,
+            "label gx sx gy sy gz sz -> label (gx sx cx) (gy sy cy) (gz sz cz)",
+            cx=cx,
+            cy=cy,
+            cz=cz,
+        )
+
+        image = repack(images[MODALITY])
+        on_input = np.empty((*image.shape, len(LABELS)), dtype=np.float32)
+        for label, volume in enumerate(on_grid):
+            on_input[..., label] = resample_nearest(
+                np.ascontiguousarray(volume), grid_affine, image.affine, image.shape
+            )
+        return nib.Nifti1Image(on_input, image.affine)
+
+    def binarize(self, scores: np.ndarray, threshold: float) -> np.ndarray:
+        """Scores to a label map. All postprocessing lives here, so the protocol can search it by
+        calling this at every candidate threshold rather than knowing what it does."""
+        labels = scores.argmax(axis=-1) + 1
+        return np.where(scores.max(axis=-1) >= threshold, labels, 0).astype(np.uint8)
+
+    def predict(self, images: Images) -> nib.Nifti1Image:
+        """A label map on the input's own grid, which is what the challenge scores."""
+        assert self.threshold is not None, "threshold is set by `train` or by `load`, not by `fit`"
+        scores = self.predict_scores(images)
+        labels = self.binarize(np.asarray(scores.dataobj), self.threshold)
+        return nib.Nifti1Image(labels, scores.affine)
+
+    def save(self, model_dir: Path) -> None:
+        """Config, head and threshold; the weights stay wherever `ckpt_path` points."""
+        model_dir.mkdir(parents=True, exist_ok=True)
+        OmegaConf.save(self.cfg, model_dir / "config.yaml")
+        joblib.dump({"head": self.head, "threshold": self.threshold}, model_dir / "head.joblib")
+
+    @classmethod
+    def load(cls, model_dir: Path, **overrides) -> "Task4Method":
+        """Rebuild a fitted method from `save`. Overrides are Config fields: ckpt path, device."""
+        cfg = OmegaConf.merge(
+            OmegaConf.structured(Config), OmegaConf.load(model_dir / "config.yaml"), overrides
+        )
+        method = cls(cfg)
+        state = joblib.load(model_dir / "head.joblib")
+        method.head, method.threshold = state["head"], state["threshold"]
+        return method
+
+
+# ---- protocol: the part we hold fixed ---------------------------------------------------
+
+# Task 4 only has t2w
+IMAGE_COLS = ("t2w",)
+
+# Scores are ridge fits of a sub-cell label fraction whose prevalence is ~2e-3, so the grid is
+# geometric rather than linear.
+THRESHOLDS = np.logspace(-6, -0.3, 60)
+
+
+class Curves(NamedTuple):
+    """Everything the protocol reports is a read off these, so no fold is ever recomputed."""
+
+    dice: np.ndarray  # (n_subjects, n_labels, n_thresholds)
+    predicted_voxels: np.ndarray  # (n_subjects, n_labels, n_thresholds)
+    true_voxels: np.ndarray  # (n_subjects, n_labels)
+
+
+def subject_curves(
+    method: Task4Method, scores: np.ndarray, truth: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """One subject's per-label Dice and predicted voxel count at every threshold in THRESHOLDS."""
+    true_voxels = np.array([int((truth == value).sum()) for value in LABELS])
+
+    dice = np.zeros((len(LABELS), len(THRESHOLDS)))
+    predicted = np.zeros((len(LABELS), len(THRESHOLDS)))
+    for i, threshold in enumerate(THRESHOLDS):
+        prediction = method.binarize(scores, threshold)
+        for j, value in enumerate(LABELS):
+            predicted_voxels = int((prediction == value).sum())
+            overlap = int(np.logical_and(prediction == value, truth == value).sum())
+            denominator = predicted_voxels + true_voxels[j]
+
+            predicted[j, i] = predicted_voxels
+            dice[j, i] = 2 * overlap / denominator if denominator else 1.0
+    return dice, predicted
+
+
+def leave_one_out(rows: list[dict], method: Task4Method) -> Curves:
+    """Every subject's threshold curves, predicted by a head fit on the other n-1."""
+    dice, predicted, true = [], [], []
+    start = time.perf_counter()
+    for row in rows:
+        method.fit([r for r in rows if r["subject"] != row["subject"]])
+
+        scores_img = method.predict_scores({key: row[key] for key in IMAGE_COLS})
+        scores = np.asarray(scores_img.dataobj)
+        truth = np.asarray(repack(row["seg"]).dataobj, dtype=np.float32).round().astype(np.uint8)
+        assert scores.shape[:3] == truth.shape, "scores are not on the label grid"
+
+        # Voxels that can affect the dice score
+        candidates = (scores.max(axis=-1) >= THRESHOLDS[0]) | (truth > 0)
+        subject_dice, subject_predicted = subject_curves(
+            method, scores[candidates], truth[candidates]
+        )
+        dice.append(subject_dice)
+        predicted.append(subject_predicted)
+        true.append([int((truth == value).sum()) for value in LABELS])
+
+        best = subject_dice.mean(axis=0).argmax()
+        peak = " ".join(f"{name}={subject_dice[j].max():.3f}" for j, name in enumerate(LABEL_NAMES))
+        logger.info(
+            f"fold {len(dice)}/{len(rows)} {row['subject']} mean={subject_dice[:, best].mean():.3f} "
+            f"at thr={THRESHOLDS[best]:.2e} oracle {peak} score_max={scores.max():.3g} "
+            f"candidates={int(candidates.sum())} ({time.perf_counter() - start:.0f}s)"
+        )
+    return Curves(np.stack(dice), np.stack(predicted), np.array(true))
+
+
+def score(curves: Curves, seed: int = 0, n_boot: int = 2000, alpha: float = 0.05) -> dict:
+    """Mean per-subject Dice at the best single threshold, plus a percentile CI over subjects.
+
+    `dice_oracle` lets every subject cut where it likes, which bounds any thresholding rule.
+    """
+    best = int(curves.dice.mean(axis=(0, 1)).argmax())
+    dice = curves.dice[:, :, best]
+
+    rng = np.random.default_rng(seed)
+    resamples = rng.integers(0, len(dice), size=(n_boot, len(dice)))
+    samples = dice.mean(axis=1)[resamples].mean(axis=1)
+    low, high = np.percentile(samples, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+
+    return {
+        "dice": float(dice.mean()),
+        "dice_ci_low": float(low),
+        "dice_ci_high": float(high),
+        **{f"dice_{name}": float(dice[:, j].mean()) for j, name in enumerate(LABEL_NAMES)},
+        "dice_oracle": float(curves.dice.mean(axis=1).max(axis=1).mean()),
+        "threshold": float(THRESHOLDS[best]),
+    }
+
+
+# ---- entrypoints ------------------------------------------------------------------------
+
+
+def train(args: argparse.Namespace) -> None:
+    # imported here, not at the top, so the container needs no dataset stack to run `predict`
+    from fomo_tune.datasets import load_fomo_task4
+
+    cfg = OmegaConf.merge(OmegaConf.structured(Config), OmegaConf.from_dotlist(args.overrides))
+    run_dir = Path(cfg.output_root) / cfg.name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    setup_logging(run_dir)
+    set_seed(cfg.seed)
+    logger.info(f"run {cfg.name} (git {git_sha()})")
+    logger.info(f"config:\n{OmegaConf.to_yaml(cfg).rstrip()}")
+    OmegaConf.save(cfg, run_dir / "config.yaml")
+
+    # decoded once: leave-one-out revisits every subject n times
+    rows = list(load_fomo_task4())
+    logger.info(f"dataset: {len(rows)} subjects")
+
+    method = Task4Method(cfg)
+    start = time.perf_counter()
+    curves = leave_one_out(rows, method)
+    run_time = time.perf_counter() - start
+    summary = score(curves)
+
+    # the shipped model sees all n subjects, so it is not any of the models scored above
+    method.fit(rows)
+    method.threshold = summary["threshold"]
+    method.save(run_dir / "model")
+
+    record = {"name": cfg.name, **summary, "run_time": round(run_time, 1)}
+    (run_dir / "metrics.json").write_text(json.dumps(record) + "\n")
+    np.savez(
+        run_dir / "curves.npz",
+        subjects=[row["subject"] for row in rows],
+        thresholds=THRESHOLDS,
+        **curves._asdict(),
+    )
+    scores = "  ".join(f"{k}={v:.4f}" for k, v in summary.items())
+    logger.info(f"result: {scores}  ({run_time:.0f}s)")
+
+
+def predict(args: argparse.Namespace) -> None:
+    """The challenge contract: modality paths in, a label nifti written to `--output`."""
+    overrides = {"device": args.device}
+    if args.ckpt_path:
+        overrides["ckpt_path"] = args.ckpt_path
+    method = Task4Method.load(args.model_dir, **overrides)
+
+    labels = method.predict({"t2w": nib.load(args.t2w)})
+    nib.save(labels, args.output)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    modes = parser.add_subparsers(required=True)
+
+    train_parser = modes.add_parser("train", help="leave-one-out over the task, then fit and save")
+    train_parser.add_argument("overrides", nargs="*", help="config overrides, e.g. device=cpu")
+    train_parser.set_defaults(run=train)
+
+    predict_parser = modes.add_parser("predict", help="one subject, one label nifti")
+    predict_parser.add_argument("--t2w", type=Path, required=True)
+    predict_parser.add_argument("--output", type=Path, required=True)
+    predict_parser.add_argument("--model-dir", type=Path, default=Path("/app/model"))
+    predict_parser.add_argument("--ckpt-path", help="overrides the trained config's backbone path")
+    predict_parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    predict_parser.set_defaults(run=predict)
+
+    args = parser.parse_args()
+    args.run(args)
+
+
+if __name__ == "__main__":
+    main()
