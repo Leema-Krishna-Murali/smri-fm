@@ -35,11 +35,9 @@ import torch
 from einops import rearrange, reduce, repeat
 from omegaconf import OmegaConf
 from scipy import ndimage
-from sklearn.linear_model import RidgeCV
-from sklearn.pipeline import Pipeline, make_pipeline
-from sklearn.preprocessing import StandardScaler
 
 from fomo_tune.backbone import load_backbone, rescale
+from fomo_tune.ridge import Ridge
 from fomo_tune.utils import git_sha, set_seed, setup_logging
 
 logger = logging.getLogger("fomo_tune")
@@ -70,6 +68,7 @@ class Config:
     target_sigma_mm: float = 0.0
     block: int | None = None
     alphas: list[float] = field(default_factory=lambda: [1e1, 1e2, 1e3, 1e4, 1e5, 1e6])
+    n_splits: int = 5
     device: str = "cuda"
     seed: int = 4466
 
@@ -103,13 +102,6 @@ class Patches(NamedTuple):
     features: np.ndarray  # (n_patches, dim)
     patch_ids: np.ndarray  # (n_patches,) indices into the flattened patch grid
     targets: np.ndarray  # (n_patches, n_labels * subcell ** 3)
-
-
-def fit_head(features: np.ndarray, targets: np.ndarray, alphas: list[float]) -> Pipeline:
-    """One ridge from a token to every sub-cell's label fraction, alpha shared over outputs."""
-    head = make_pipeline(StandardScaler(), RidgeCV(alphas=alphas))
-    head.fit(features, targets)
-    return head
 
 
 class Task4Method:
@@ -259,10 +251,20 @@ class Task4Method:
         return self.cache[row["subject"]]
 
     def fit(self, rows: list[dict]) -> None:
+        """One ridge from a token to every sub-cell's label fraction, alpha shared over outputs.
+
+        Alpha is chosen by held-out *subjects*: tokens within a subject are far from independent, so
+        splitting on them would pick an alpha for a sample size we do not have.
+        """
         subjects = [self.cached_patches(row) for row in rows]
-        features = np.concatenate([subject.features for subject in subjects])
-        targets = np.concatenate([subject.targets for subject in subjects])
-        self.head = fit_head(features, targets, list(self.cfg.alphas))
+        features = torch.from_numpy(np.concatenate([s.features for s in subjects]))
+        targets = torch.from_numpy(np.concatenate([s.targets for s in subjects]))
+        groups = np.concatenate([np.full(len(s.features), i) for i, s in enumerate(subjects)])
+
+        head = Ridge(alphas=self.cfg.alphas, n_splits=self.cfg.n_splits, seed=self.cfg.seed)
+        head.fit(features.to(self.device), targets.to(self.device), groups)
+        # kept on the host: predict is one small matmul, and the saved model has to load on cpu
+        self.head = head.to("cpu")
 
     def predict_scores(self, images: Images) -> nib.Nifti1Image:
         """Per-label score per voxel on the input's own grid, constant within each sub-cell.
@@ -273,7 +275,7 @@ class Task4Method:
         """
         features, patch_ids, grid_affine = self.embed(images)
 
-        predicted = self.head.predict(features)
+        predicted = self.head.predict(torch.from_numpy(features)).numpy()
         scores = np.zeros(
             (int(np.prod(self.grid_size)), len(LABELS), self.subcell**3), dtype=np.float32
         )
@@ -403,7 +405,8 @@ def leave_one_out(rows: list[dict], method: Task4Method) -> Curves:
         peak = " ".join(f"{name}={subject_dice[j].max():.3f}" for j, name in enumerate(LABEL_NAMES))
         logger.info(
             f"fold {len(dice)}/{len(rows)} {row['subject']} mean={subject_dice[:, best].mean():.3f} "
-            f"at thr={THRESHOLDS[best]:.2e} oracle {peak} score_max={scores.max():.3g} "
+            f"at thr={THRESHOLDS[best]:.2e} oracle {peak} alpha={method.head.alpha_:.0e} "
+            f"score_max={scores.max():.3g} "
             f"candidates={int(candidates.sum())} ({time.perf_counter() - start:.0f}s)"
         )
     return Curves(np.stack(dice), np.stack(predicted), np.array(true))
