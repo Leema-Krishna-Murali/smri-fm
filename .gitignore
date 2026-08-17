@@ -39,6 +39,8 @@ uv.lock
 /checkpoints/
 /output/
 /wandb/
+# a saved fold is a whole model dir, so its config is just the run's config again
+folds/
 
 # Local scratch/tmp
 .scratch

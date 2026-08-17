@@ -18,13 +18,13 @@ Protocol (fixed):
 - Per-label Dice at every threshold in a fixed grid.
 - Choose the global threshold to maximize mean dice over out-of-fold subjects.
 - Reported with a bootstrap CI over subjects, alongside the per-subject oracle cut.
+- Every fold is saved, at its subject's oracle cut, so it can be inspected without refitting.
 """
 
 import argparse
 import json
 import logging
 import time
-import functools
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
@@ -387,8 +387,13 @@ def subject_curves(
     return dice.cpu().numpy(), predicted.cpu().numpy()
 
 
-def leave_one_out(rows: list[dict], method: Task4Method) -> Curves:
-    """Every subject's threshold curves, predicted by a head fit on the other n-1."""
+def leave_one_out(rows: list[dict], method: Task4Method, folds_dir: Path) -> Curves:
+    """Every subject's threshold curves, predicted by a head fit on the other n-1.
+
+    Each fold is saved under `folds_dir/<held-out subject>`, at that subject's oracle cut and with
+    the sparse label map that cut gives. The cut is chosen on the subject's own labels, so it is for
+    inspection and is not a score.
+    """
     dice, predicted, true = [], [], []
     start = time.perf_counter()
     for row in rows:
@@ -398,19 +403,41 @@ def leave_one_out(rows: list[dict], method: Task4Method) -> Curves:
         scores = np.asarray(scores_img.dataobj)
         truth = np.asarray(repack(row["seg"]).dataobj, dtype=np.float32).round().astype(np.uint8)
         assert scores.shape[:3] == truth.shape, "scores are not on the label grid"
+        assert scores.shape[3] == len(LABELS) == 2, "expected two classes"
 
-        # Voxels that can affect the dice score. Reducing the labels pairwise is ~24x faster than
-        # scores.max(axis=-1), whose reduction axis is too short for numpy to do well on.
-        best = functools.reduce(np.maximum, [scores[..., j] for j in range(len(LABELS))])
-        candidates = (best >= THRESHOLDS[0]) | (truth > 0)
+        # Voxels that can affect the dice score.
+        # Nb, this is ~24x faster than scores.max(axis=-1), whose reduction axis is too short
+        # for numpy to do well on.
+        best_score = np.maximum(scores[..., 0], scores[..., 1])
+        candidates = (best_score >= THRESHOLDS[0]) | (truth > 0)
+        candidate_scores = scores[candidates]
         subject_dice, subject_predicted = subject_curves(
-            method, scores[candidates], truth[candidates]
+            method, candidate_scores, truth[candidates]
         )
         dice.append(subject_dice)
         predicted.append(subject_predicted)
         true.append([int((truth == value).sum()) for value in LABELS])
 
         best = subject_dice.mean(axis=0).argmax()
+        fold_dir = folds_dir / row["subject"]
+        method.threshold = float(THRESHOLDS[best])
+        method.save(fold_dir)
+
+        # every claim is a candidate, since the cut is never below the grid's lowest threshold
+        claimed = np.zeros(truth.shape, dtype=np.uint8)
+        claimed[candidates] = method.binarize(
+            torch.from_numpy(candidate_scores), method.threshold
+        ).numpy()
+        voxels = np.flatnonzero(claimed)
+        np.savez_compressed(
+            fold_dir / "prediction.npz",
+            voxels=voxels,
+            labels=claimed.reshape(-1)[voxels],
+            shape=truth.shape,
+            affine=scores_img.affine,
+            threshold=method.threshold,
+        )
+
         peak = " ".join(f"{name}={subject_dice[j].max():.3f}" for j, name in enumerate(LABEL_NAMES))
         logger.info(
             f"fold {len(dice)}/{len(rows)} {row['subject']} mean={subject_dice[:, best].mean():.3f} "
@@ -467,7 +494,7 @@ def train(args: argparse.Namespace) -> None:
 
     method = Task4Method(cfg)
     start = time.perf_counter()
-    curves = leave_one_out(rows, method)
+    curves = leave_one_out(rows, method, run_dir / "folds")
     run_time = time.perf_counter() - start
     summary = score(curves)
 
