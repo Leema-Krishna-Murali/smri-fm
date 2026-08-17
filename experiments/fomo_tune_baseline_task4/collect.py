@@ -43,7 +43,7 @@ def main() -> None:
         print(
             f"| {cfg.name} | {cfg.scale} | {cfg.subcell} | {cell_mm:.2f} "
             f"| {'final' if cfg.block is None else cfg.block} "
-            f"| {'—' if ceiling is None else f'{ceiling:.3f}'} "
+            f"| {'-' if ceiling is None else f'{ceiling:.3f}'} "
             f"| **{metrics['dice']:.3f}** [{metrics['dice_ci_low']:.3f}, "
             f"{metrics['dice_ci_high']:.3f}] "
             f"| {metrics['dice_nerve']:.3f} | {metrics['dice_vessel']:.3f} "
