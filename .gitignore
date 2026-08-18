@@ -32,6 +32,7 @@ uv.lock
 *.npz
 *.sif
 *.joblib
+*.nii.gz
 
 # Output directories.
 # An experiment's run dirs keep their text record -- the 5G .sif, the fitted
