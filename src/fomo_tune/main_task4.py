@@ -83,6 +83,28 @@ def repack(img: nib.Nifti1Image) -> nib.Nifti1Image:
     return nib.Nifti1Image(img.dataobj, img.affine, img.header)
 
 
+def decode(rows: list[dict]) -> list[dict]:
+    """Gunzip every volume up front.
+
+    The rows hold compressed bytes, and `repack` builds a fresh image whose fdata cache
+    is empty, so every `prepare` call decompresses the data again.
+    """
+    decoded = []
+    for row in rows:
+        t2w = repack(row["t2w"])
+        seg = repack(row["seg"])
+        decoded.append(
+            {
+                **row,
+                "t2w": nib.Nifti1Image(t2w.get_fdata(dtype=np.float32), t2w.affine),
+                "seg": nib.Nifti1Image(
+                    np.asarray(seg.dataobj, dtype=np.float32).round().astype(np.uint8), seg.affine
+                ),
+            }
+        )
+    return decoded
+
+
 def resample_nearest(
     volume: np.ndarray, source_affine: np.ndarray, target_affine: np.ndarray, target_shape: tuple
 ) -> np.ndarray:
@@ -132,7 +154,7 @@ class Task4Method:
 
     def prepare(self, image: nib.Nifti1Image) -> dict[str, torch.Tensor]:
         """One volume at `1 / scale` mm, cropped to the canvas around the subject's own anchor."""
-        image = nib.as_closest_canonical(nib.funcs.squeeze_image(repack(image)))
+        image = nib.as_closest_canonical(nib.funcs.squeeze_image(image))
         volume = torch.from_numpy(np.ascontiguousarray(image.get_fdata(dtype=np.float32)))
         assert volume.ndim == 3, f"expected a 3D volume, got {tuple(volume.shape)}"
 
@@ -180,7 +202,9 @@ class Task4Method:
     @torch.inference_mode()
     def embed(self, images: Images) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """The kept tokens' features and grid indices, and the affine of the grid they live on."""
+        start = time.perf_counter()
         sample = self.prepare(images[MODALITY])
+        prepared = time.perf_counter()
         batch = {key: value[None].to(self.device) for key, value in sample.items()}
 
         encoder = self.backbone.encoder
@@ -205,6 +229,9 @@ class Task4Method:
             # batch size 1, so the jagged pack is one flat sequence behind the prefix tokens
             features = captured[0][encoder.num_prefix_tokens :]
 
+        logger.info(
+            f"embed prepare={prepared - start:.1f}s forward={time.perf_counter() - prepared:.1f}s"
+        )
         return (
             features.float().cpu().numpy(),
             out["patch_ids"][0].cpu().numpy(),
@@ -213,7 +240,6 @@ class Task4Method:
 
     def cell_targets(self, seg: nib.Nifti1Image, grid_affine: np.ndarray) -> np.ndarray:
         """Each label's fraction of every sub-cell, over the whole grid, in flattened order."""
-        seg = repack(seg)
         labels = np.asarray(seg.dataobj, dtype=np.float32).round()
         on_grid = resample_nearest(labels, seg.affine, grid_affine, self.img_size)
 
@@ -247,9 +273,15 @@ class Task4Method:
     def cached_patches(self, row: dict) -> Patches:
         """Cached: leave-one-out revisits every subject n times."""
         if row["subject"] not in self.cache:
+            start = time.perf_counter()
             features, patch_ids, grid_affine = self.embed(row)
+            embedded = time.perf_counter()
             targets = self.cell_targets(row["seg"], grid_affine)
             self.cache[row["subject"]] = Patches(features, patch_ids, targets[patch_ids])
+            logger.info(
+                f"cache {row['subject']} embed={embedded - start:.1f}s "
+                f"targets={time.perf_counter() - embedded:.1f}s"
+            )
         return self.cache[row["subject"]]
 
     def fit(self, rows: list[dict]) -> None:
@@ -305,7 +337,7 @@ class Task4Method:
             cz=cz,
         )
 
-        image = repack(images[MODALITY])
+        image = images[MODALITY]
         on_input = np.empty((*image.shape, len(LABELS)), dtype=np.float32)
         for label, volume in enumerate(on_grid):
             on_input[..., label] = resample_nearest(
@@ -408,11 +440,13 @@ def leave_one_out(rows: list[dict], method: Task4Method, folds_dir: Path) -> Cur
     dice, predicted, true = [], [], []
     start = time.perf_counter()
     for row in rows:
+        fold_start = time.perf_counter()
         method.fit([r for r in rows if r["subject"] != row["subject"]])
+        fitted = time.perf_counter()
 
         scores_img = method.predict_scores({key: row[key] for key in IMAGE_COLS})
         scores = np.asarray(scores_img.dataobj)
-        truth = np.asarray(repack(row["seg"]).dataobj, dtype=np.float32).round().astype(np.uint8)
+        truth = np.asarray(row["seg"].dataobj, dtype=np.float32).round().astype(np.uint8)
         assert scores.shape[:3] == truth.shape, "scores are not on the label grid"
         assert scores.shape[3] == len(LABELS) == 2, "expected two classes"
 
@@ -422,9 +456,11 @@ def leave_one_out(rows: list[dict], method: Task4Method, folds_dir: Path) -> Cur
         best_score = np.maximum(scores[..., 0], scores[..., 1])
         candidates = (best_score >= THRESHOLDS[0]) | (truth > 0)
         candidate_scores = scores[candidates]
+        predicted_at = time.perf_counter()
         subject_dice, subject_predicted = subject_curves(
             method, candidate_scores, truth[candidates]
         )
+        scored = time.perf_counter()
         dice.append(subject_dice)
         predicted.append(subject_predicted)
         true.append([int((truth == value).sum()) for value in LABELS])
@@ -448,6 +484,12 @@ def leave_one_out(rows: list[dict], method: Task4Method, folds_dir: Path) -> Cur
             shape=truth.shape,
             affine=scores_img.affine,
             thresholds=method.thresholds,
+        )
+
+        logger.info(
+            f"fold {len(dice)}/{len(rows)} {row['subject']} phases: fit={fitted - fold_start:.1f}s "
+            f"predict={predicted_at - fitted:.1f}s curves={scored - predicted_at:.1f}s "
+            f"save={time.perf_counter() - scored:.1f}s"
         )
 
         peak = " ".join(f"{name}={subject_dice[j].max():.3f}" for j, name in enumerate(LABEL_NAMES))
@@ -503,8 +545,9 @@ def train(args: argparse.Namespace) -> None:
     OmegaConf.save(cfg, run_dir / "config.yaml")
 
     # decoded once: leave-one-out revisits every subject n times
-    rows = list(load_fomo_task4())
-    logger.info(f"dataset: {len(rows)} subjects")
+    start = time.perf_counter()
+    rows = decode(list(load_fomo_task4()))
+    logger.info(f"dataset: {len(rows)} subjects, decoded in {time.perf_counter() - start:.0f}s")
 
     method = Task4Method(cfg)
     start = time.perf_counter()
