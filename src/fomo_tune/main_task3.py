@@ -1,19 +1,19 @@
 """FOMO task 3: brain age regression, scored by Pearson r and MAE as the challenge scores it.
 
 `Task3Method` is the part we tune -- features, head, hyperparameters. The protocol below it is
-fixed so scores stay comparable across iterations: fit on the 494 subjects, then score `predict`
-on each holdout in `--evals`.
+fixed so scores stay comparable across iterations: 20-fold over the 494 subjects, pool the
+out-of-fold predictions, bootstrap subjects for the CI.
 
 `train` runs that protocol then fits and saves a head; `predict` is the challenge contract, one t1
-path in and one age out. Both go through `Task3Method.predict`, so the scored path is the
-submitted path.
+path in and one age out. Both go through `Task3Method.predict`, so every fold exercises the path
+the submission will run.
 """
 
 import argparse
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import joblib
@@ -42,7 +42,6 @@ class Config:
     name: str = "task3"
     device: str = "cuda"
     seed: int = 4466
-    evals: list[str] = field(default_factory=lambda: ["camcan"])
 
 
 # ---- method: the part we tune -----------------------------------------------------------
@@ -182,7 +181,6 @@ def train(args: argparse.Namespace) -> None:
     }
 
     cfg = OmegaConf.merge(OmegaConf.structured(Config), OmegaConf.from_dotlist(args.overrides))
-    cfg.evals = list(args.evals)
     run_dir = Path(cfg.output_root) / cfg.name
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -204,25 +202,25 @@ def train(args: argparse.Namespace) -> None:
     method.save(run_dir / "model")
 
     record = {"name": cfg.name, "evals": {}}
-    for eval_name in cfg.evals:
+    for eval_name in args.evals:
         holdout = list(eval_loaders[eval_name]())
         holdout_ages = np.array([row["age"] for row in holdout])
         logger.info(
             f"{eval_name}: {len(holdout)} subjects, age {holdout_ages.min():.1f}-"
             f"{holdout_ages.max():.1f} mean {holdout_ages.mean():.1f}"
         )
-        y, pred = evaluate(holdout, method)
-        summary = score(y, pred)
-        preds = [
+        y_eval, pred_eval = evaluate(holdout, method)
+        eval_summary = score(y_eval, pred_eval)
+        eval_preds = [
             {"subject": row["subject"], "age": float(age), "pred": float(p)}
-            for row, age, p in zip(holdout, y, pred)
+            for row, age, p in zip(holdout, y_eval, pred_eval)
         ]
         (run_dir / f"{eval_name}_preds.json").write_text(
-            "".join(json.dumps(row) + "\n" for row in preds)
+            "".join(json.dumps(row) + "\n" for row in eval_preds)
         )
-        record["evals"][eval_name] = summary
-        scores = "  ".join(f"{k}={v:.4f}" for k, v in summary.items())
-        logger.info(f"{eval_name}: {scores}")
+        record["evals"][eval_name] = eval_summary
+        eval_scores = "  ".join(f"{k}={v:.4f}" for k, v in eval_summary.items())
+        logger.info(f"{eval_name}: {eval_scores}")
 
     record["run_time"] = round(time.perf_counter() - start, 1)
     (run_dir / "metrics.json").write_text(json.dumps(record) + "\n")
@@ -249,12 +247,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     modes = parser.add_subparsers(required=True)
 
-    train_parser = modes.add_parser("train", help="fit on the task, then score holdout evals")
+    train_parser = modes.add_parser("train", help="cross-validate over the task, then fit and save")
     train_parser.add_argument(
         "--evals",
-        nargs="+",
+        nargs="*",
         default=["camcan"],
-        help="holdout datasets to score after fit, e.g. --evals camcan dlbs aomic",
+        help="holdout datasets to score with the fitted head, e.g. --evals camcan dlbs aomic",
     )
     train_parser.add_argument("overrides", nargs="*", help="config overrides, e.g. device=cpu")
     train_parser.set_defaults(run=train)
