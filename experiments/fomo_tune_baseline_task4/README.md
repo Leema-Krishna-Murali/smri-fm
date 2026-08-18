@@ -127,3 +127,20 @@ marginally the best of them.
 `scale=3` wins the geometry outright and is the only setting where the nerve does anything (0.069
 at its own threshold), while `block=3` wins the depth sweep. They were run on separate axes and
 never together.
+
+## Sweep C: depth (`launch_depth.sh`, 9 runs)
+
+Appended 2026-08-18, after changes to `main_task4.py`:
+
+- Separate threshold per label rather than one shared threshold.
+- `depth` replaces `block` and is a forward pre-hook. `depth=k+1` = `block=k`, `depth=0`
+= post patch/pos embed, `depth=None` = full post-norm model.
+- `alphas` now runs to `1e8`, since a `depth=0` test run chose the old top value `1e6`.
+
+`subcell=4` throughout. `s3_dfinal` and `s2_d04` are
+**anchors**: they re-run `s3_c4` and `blk03` unchanged except for the per-label cut.
+
+| | depth 0 | 1 | 2 | 4 | final |
+|---|---|---|---|---|---|
+| **scale 2** | x | x | x | anchor (`blk03`) | - |
+| **scale 3** | x | x | x | x | anchor (`s3_c4`) |

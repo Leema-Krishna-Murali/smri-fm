@@ -4,7 +4,8 @@ Method (tune):
 
 1. Scale 0.5mm input to a target resolution (scale = 1, 2, 3 = 1mm, 0.5mm, 0.33mm), and
    crop around an anchor relative to the subject's mask centroid.
-2. Extract patch features.
+2. Extract patch features, `depth` blocks in. `depth=0` is the patch embedding, `depth=None`
+   the full model post-norm.
 3. Ridge regression head predicting "subcell" targets. At `subcell=8`, you get a
    separate prediction per voxel.
 
@@ -15,8 +16,8 @@ making sub-patch predictions.
 Protocol (fixed):
 
 - Leave one subject out over the 40.
-- Per-label Dice at every threshold in a fixed grid.
-- Choose the global threshold to maximize mean dice over out-of-fold subjects.
+- Per-label Dice at every pair of per-label cuts drawn from a fixed grid.
+- Choose the global pair of cuts to maximize mean dice over out-of-fold subjects.
 - Reported with a bootstrap CI over subjects, alongside the per-subject oracle cut.
 - Every fold is saved, at its subject's oracle cut, so it can be inspected without refitting.
 """
@@ -67,8 +68,8 @@ class Config:
     scale: int = 2
     subcell: int = 4
     target_sigma_mm: float = 0.0
-    block: int | None = None
-    alphas: list[float] = field(default_factory=lambda: [1e1, 1e2, 1e3, 1e4, 1e5, 1e6])
+    depth: int | None = None
+    alphas: list[float] = field(default_factory=lambda: [1e3, 1e4, 1e5, 1e6, 1e7, 1e8])
     n_splits: int = 5
     device: str = "cuda"
     seed: int = 4466
@@ -127,7 +128,7 @@ class Task4Method:
 
         self.cache: dict[str, Patches] = {}
         self.head = None
-        self.threshold = None
+        self.thresholds = None
 
     def prepare(self, image: nib.Nifti1Image) -> dict[str, torch.Tensor]:
         """One volume at `1 / scale` mm, cropped to the canvas around the subject's own anchor."""
@@ -185,9 +186,9 @@ class Task4Method:
         encoder = self.backbone.encoder
         captured = []
         handle = None
-        if self.cfg.block is not None:
-            handle = encoder.blocks[self.cfg.block].register_forward_hook(
-                lambda module, args, output: captured.append(output)
+        if self.cfg.depth is not None:
+            handle = encoder.blocks[self.cfg.depth].register_forward_pre_hook(
+                lambda module, args: captured.append(args[0])
             )
         try:
             with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
@@ -196,9 +197,9 @@ class Task4Method:
             if handle is not None:
                 handle.remove()
 
-        # batch size 1 leaves no padded token slots, which the block hook's flat slice relies on
+        # batch size 1 leaves no padded token slots, which the depth hook's flat slice relies on
         assert out["token_mask"].all(), "the token sequence is padded"
-        if self.cfg.block is None:
+        if self.cfg.depth is None:
             features = out["patch_embeds"][0]
         else:
             # batch size 1, so the jagged pack is one flat sequence behind the prefix tokens
@@ -312,24 +313,29 @@ class Task4Method:
             )
         return nib.Nifti1Image(on_input, image.affine)
 
-    def binarize(self, scores: torch.Tensor, threshold: float) -> torch.Tensor:
-        """Scores to a label map. All postprocessing lives here, so the protocol can search it by
-        calling this at every candidate threshold rather than knowing what it does."""
-        best, labels = scores.max(dim=-1)
-        return torch.where(best >= threshold, labels + 1, 0).to(torch.uint8)
+    def binarize(self, scores: torch.Tensor, thresholds: np.ndarray) -> torch.Tensor:
+        """Scores to a label map, one cut per label. All postprocessing lives here, so the protocol
+        can search it by calling this at every candidate rather than knowing what it does.
+
+        The two labels' scores are not on a common scale, so each fires on its own cut and a voxel
+        both claim goes to whichever is furthest above its own.
+        """
+        cuts = torch.as_tensor(thresholds, dtype=scores.dtype, device=scores.device)
+        best, labels = (scores / cuts).max(dim=-1)
+        return torch.where(best >= 1.0, labels + 1, 0).to(torch.uint8)
 
     def predict(self, images: Images) -> nib.Nifti1Image:
         """A label map on the input's own grid, which is what the challenge scores."""
-        assert self.threshold is not None, "threshold is set by `train` or by `load`, not by `fit`"
+        assert self.thresholds is not None, "thresholds are set by `train` or `load`, not `fit`"
         scores = self.predict_scores(images)
-        labels = self.binarize(torch.from_numpy(np.asarray(scores.dataobj)), self.threshold)
+        labels = self.binarize(torch.from_numpy(np.asarray(scores.dataobj)), self.thresholds)
         return nib.Nifti1Image(labels.numpy(), scores.affine)
 
     def save(self, model_dir: Path) -> None:
-        """Config, head and threshold; the weights stay wherever `ckpt_path` points."""
+        """Config, head and thresholds; the weights stay wherever `ckpt_path` points."""
         model_dir.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(self.cfg, model_dir / "config.yaml")
-        joblib.dump({"head": self.head, "threshold": self.threshold}, model_dir / "head.joblib")
+        joblib.dump({"head": self.head, "thresholds": self.thresholds}, model_dir / "head.joblib")
 
     @classmethod
     def load(cls, model_dir: Path, **overrides) -> "Task4Method":
@@ -339,7 +345,7 @@ class Task4Method:
         )
         method = cls(cfg)
         state = joblib.load(model_dir / "head.joblib")
-        method.head, method.threshold = state["head"], state["threshold"]
+        method.head, method.thresholds = state["head"], state["thresholds"]
         return method
 
 
@@ -354,45 +360,50 @@ THRESHOLDS = np.logspace(-6, -0.3, 60)
 
 
 class Curves(NamedTuple):
-    """Everything the protocol reports is a read off these, so no fold is ever recomputed."""
+    """Everything the protocol reports is a read off these, so no fold is ever recomputed.
 
-    dice: np.ndarray  # (n_subjects, n_labels, n_thresholds)
-    predicted_voxels: np.ndarray  # (n_subjects, n_labels, n_thresholds)
+    The two threshold axes are one cut per label, in `LABELS` order. A label's Dice depends on the
+    other's cut as well as its own, since the two compete for the voxels they both claim.
+    """
+
+    dice: np.ndarray  # (n_subjects, n_labels, n_thresholds, n_thresholds)
+    predicted_voxels: np.ndarray  # (n_subjects, n_labels, n_thresholds, n_thresholds)
     true_voxels: np.ndarray  # (n_subjects, n_labels)
 
 
 def subject_curves(
     method: Task4Method, scores: np.ndarray, truth: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
-    """One subject's per-label Dice and predicted voxel count at every threshold in THRESHOLDS."""
+    """One subject's per-label Dice and predicted voxel count at every pair of cuts in THRESHOLDS."""
     scores = torch.as_tensor(scores, device=method.device)
     truth = torch.as_tensor(truth, device=method.device)
     hits = [truth == value for value in LABELS]
     true_voxels = torch.stack([hit.sum() for hit in hits])
 
-    shape = (len(LABELS), len(THRESHOLDS))
+    n_cuts = len(THRESHOLDS)
+    shape = (len(LABELS), n_cuts, n_cuts)
     dice = torch.zeros(shape, device=method.device, dtype=torch.float64)
     predicted = torch.zeros(shape, device=method.device, dtype=torch.float64)
-    for i, threshold in enumerate(THRESHOLDS):
-        prediction = method.binarize(scores, threshold)
+    for nerve, vessel in np.ndindex(n_cuts, n_cuts):
+        prediction = method.binarize(scores, THRESHOLDS[[nerve, vessel]])
         for j, (value, hit) in enumerate(zip(LABELS, hits)):
             claimed = prediction == value
             predicted_voxels = claimed.sum()
             overlap = torch.logical_and(claimed, hit).sum()
             denominator = predicted_voxels + true_voxels[j]
 
-            predicted[j, i] = predicted_voxels
-            # one sync at the end instead of per threshold, so the empty case stays on device
-            dice[j, i] = torch.where(denominator > 0, 2 * overlap / denominator, 1.0)
+            predicted[j, nerve, vessel] = predicted_voxels
+            # one sync at the end instead of per pair, so the empty case stays on device
+            dice[j, nerve, vessel] = torch.where(denominator > 0, 2 * overlap / denominator, 1.0)
     return dice.cpu().numpy(), predicted.cpu().numpy()
 
 
 def leave_one_out(rows: list[dict], method: Task4Method, folds_dir: Path) -> Curves:
     """Every subject's threshold curves, predicted by a head fit on the other n-1.
 
-    Each fold is saved under `folds_dir/<held-out subject>`, at that subject's oracle cut and with
-    the sparse label map that cut gives. The cut is chosen on the subject's own labels, so it is for
-    inspection and is not a score.
+    Each fold is saved under `folds_dir/<held-out subject>`, at that subject's oracle pair of cuts
+    and with the sparse label map they give. The cuts are chosen on the subject's own labels, so
+    they are for inspection and are not a score.
     """
     dice, predicted, true = [], [], []
     start = time.perf_counter()
@@ -418,15 +429,16 @@ def leave_one_out(rows: list[dict], method: Task4Method, folds_dir: Path) -> Cur
         predicted.append(subject_predicted)
         true.append([int((truth == value).sum()) for value in LABELS])
 
-        best = subject_dice.mean(axis=0).argmax()
+        mean_dice = subject_dice.mean(axis=0)
+        best = np.unravel_index(mean_dice.argmax(), mean_dice.shape)
         fold_dir = folds_dir / row["subject"]
-        method.threshold = float(THRESHOLDS[best])
+        method.thresholds = THRESHOLDS[list(best)]
         method.save(fold_dir)
 
-        # every claim is a candidate, since the cut is never below the grid's lowest threshold
+        # every claim is a candidate, since no cut is below the grid's lowest threshold
         claimed = np.zeros(truth.shape, dtype=np.uint8)
         claimed[candidates] = method.binarize(
-            torch.from_numpy(candidate_scores), method.threshold
+            torch.from_numpy(candidate_scores), method.thresholds
         ).numpy()
         voxels = np.flatnonzero(claimed)
         np.savez_compressed(
@@ -435,13 +447,14 @@ def leave_one_out(rows: list[dict], method: Task4Method, folds_dir: Path) -> Cur
             labels=claimed.reshape(-1)[voxels],
             shape=truth.shape,
             affine=scores_img.affine,
-            threshold=method.threshold,
+            thresholds=method.thresholds,
         )
 
         peak = " ".join(f"{name}={subject_dice[j].max():.3f}" for j, name in enumerate(LABEL_NAMES))
+        cuts = "/".join(f"{cut:.1e}" for cut in method.thresholds)
         logger.info(
-            f"fold {len(dice)}/{len(rows)} {row['subject']} mean={subject_dice[:, best].mean():.3f} "
-            f"at thr={THRESHOLDS[best]:.2e} oracle {peak} alpha={method.head.alpha_:.0e} "
+            f"fold {len(dice)}/{len(rows)} {row['subject']} mean={mean_dice[best]:.3f} "
+            f"at thr={cuts} oracle {peak} alpha={method.head.alpha_:.0e} "
             f"score_max={scores.max():.3g} "
             f"candidates={int(candidates.sum())} ({time.perf_counter() - start:.0f}s)"
         )
@@ -449,12 +462,13 @@ def leave_one_out(rows: list[dict], method: Task4Method, folds_dir: Path) -> Cur
 
 
 def score(curves: Curves, seed: int = 0, n_boot: int = 2000, alpha: float = 0.05) -> dict:
-    """Mean per-subject Dice at the best single threshold, plus a percentile CI over subjects.
+    """Mean per-subject Dice at the best single pair of cuts, plus a percentile CI over subjects.
 
     `dice_oracle` lets every subject cut where it likes, which bounds any thresholding rule.
     """
-    best = int(curves.dice.mean(axis=(0, 1)).argmax())
-    dice = curves.dice[:, :, best]
+    mean_dice = curves.dice.mean(axis=(0, 1))
+    best = np.unravel_index(mean_dice.argmax(), mean_dice.shape)
+    dice = curves.dice[:, :, best[0], best[1]]
 
     rng = np.random.default_rng(seed)
     resamples = rng.integers(0, len(dice), size=(n_boot, len(dice)))
@@ -466,8 +480,8 @@ def score(curves: Curves, seed: int = 0, n_boot: int = 2000, alpha: float = 0.05
         "dice_ci_low": float(low),
         "dice_ci_high": float(high),
         **{f"dice_{name}": float(dice[:, j].mean()) for j, name in enumerate(LABEL_NAMES)},
-        "dice_oracle": float(curves.dice.mean(axis=1).max(axis=1).mean()),
-        "threshold": float(THRESHOLDS[best]),
+        "dice_oracle": float(curves.dice.mean(axis=1).max(axis=(1, 2)).mean()),
+        "thresholds": [float(cut) for cut in THRESHOLDS[list(best)]],
     }
 
 
@@ -500,7 +514,7 @@ def train(args: argparse.Namespace) -> None:
 
     # the shipped model sees all n subjects, so it is not any of the models scored above
     method.fit(rows)
-    method.threshold = summary["threshold"]
+    method.thresholds = np.array(summary["thresholds"])
     method.save(run_dir / "model")
 
     record = {"name": cfg.name, **summary, "run_time": round(run_time, 1)}
@@ -511,8 +525,9 @@ def train(args: argparse.Namespace) -> None:
         thresholds=THRESHOLDS,
         **curves._asdict(),
     )
-    scores = "  ".join(f"{k}={v:.4f}" for k, v in summary.items())
-    logger.info(f"result: {scores}  ({run_time:.0f}s)")
+    cuts = "/".join(f"{cut:.2e}" for cut in summary["thresholds"])
+    scores = "  ".join(f"{k}={v:.4f}" for k, v in summary.items() if k != "thresholds")
+    logger.info(f"result: {scores}  thr={cuts}  ({run_time:.0f}s)")
 
 
 def predict(args: argparse.Namespace) -> None:
