@@ -198,10 +198,25 @@ def train(args: argparse.Namespace) -> None:
 
     method = Task3Method(cfg)
     start = time.perf_counter()
+    y, oof = cross_validate(rows, method)
+    run_time = time.perf_counter() - start
+    summary = score(y, oof)
+
+    # the shipped head sees all n subjects, so it is not any of the models scored above
     method.fit(rows)
     method.save(run_dir / "model")
 
-    record = {"name": cfg.name, "evals": {}}
+    preds = [
+        {"subject": row["subject"], "age": float(age), "pred": float(pred)}
+        for row, age, pred in zip(rows, y, oof)
+    ]
+    (run_dir / "preds.json").write_text("".join(json.dumps(pred) + "\n" for pred in preds))
+
+    record = {"name": cfg.name, **summary, "run_time": round(run_time, 1)}
+    scores = "  ".join(f"{k}={v:.4f}" for k, v in summary.items())
+    logger.info(f"result: {scores}  ({run_time:.0f}s)")
+
+    record["evals"] = {}
     for eval_name in args.evals:
         holdout = list(eval_loaders[eval_name]())
         holdout_ages = np.array([row["age"] for row in holdout])
@@ -222,9 +237,7 @@ def train(args: argparse.Namespace) -> None:
         eval_scores = "  ".join(f"{k}={v:.4f}" for k, v in eval_summary.items())
         logger.info(f"{eval_name}: {eval_scores}")
 
-    record["run_time"] = round(time.perf_counter() - start, 1)
     (run_dir / "metrics.json").write_text(json.dumps(record) + "\n")
-    logger.info(f"done ({record['run_time']:.0f}s)")
 
 
 def predict(args: argparse.Namespace) -> None:
