@@ -69,7 +69,7 @@ These are some commonly suggested rules that we explicitly ignore/soften. Primar
 
 ## Correctness
 
-ML code fails silently. So we need to be very careful, to the point of paranoia, to reduce the chances of silent issues.
+ML code fails silently. So we need to be very careful to reduce the chances of silent issues.
 
 1. **Unverified math** -> Numerical computation that runs but is wrong is the ultimate source of silent failures. Use standard libraries for standard things, don't unnecessarily roll your own. Prefer forking a known good implementation of a standard component rather than reimplementing from scratch. Use tests to verify implementations against a known good reference when possible. Use tests and assertions to check for the expected invariants.
 
