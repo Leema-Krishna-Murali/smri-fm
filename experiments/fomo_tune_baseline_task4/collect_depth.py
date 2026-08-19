@@ -29,7 +29,7 @@ def main() -> None:
         rows.append((cfg, json.loads(metrics_path.read_text()), 8.0 / (cfg.scale * cfg.subcell)))
 
     # the full model is depth 24, which a 0-23 pre-hook cannot reach, so it sorts as such
-    rows.sort(key=lambda row: (24 if row[0].depth is None else row[0].depth, -row[0].scale))
+    rows.sort(key=lambda row: (row[0].scale, 24 if row[0].depth is None else row[0].depth))
 
     print(HEADER)
     print(RULE)

@@ -133,14 +133,43 @@ never together.
 Appended 2026-08-18, after changes to `main_task4.py`:
 
 - Separate threshold per label rather than one shared threshold.
-- `depth` replaces `block` and is a forward pre-hook. `depth=k+1` = `block=k`, `depth=0`
-= post patch/pos embed, `depth=None` = full post-norm model.
+- `depth` replaces `block` and is a forward pre-hook. `depth=k+1` = `block=k`, `depth=0` = post patch/pos embed, `depth=None` = full post-norm model.
 - `alphas` now runs to `1e8`, since a `depth=0` test run chose the old top value `1e6`.
 
-`subcell=4` throughout. `s3_dfinal` and `s2_d04` are
-**anchors**: they re-run `s3_c4` and `blk03` unchanged except for the per-label cut.
+## Results
 
-| | depth 0 | 1 | 2 | 4 | final |
-|---|---|---|---|---|---|
-| **scale 2** | x | x | x | anchor (`blk03`) | - |
-| **scale 3** | x | x | x | x | anchor (`s3_c4`) |
+| run | scale | depth | cell mm | ceiling | dice | nerve | vessel | oracle | nerve cut | vessel cut | min |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| s2_d00 | 2 | 0 | 1.00 | 0.714 | **0.068** [0.052, 0.085] | 0.061 | 0.076 | 0.083 | 1.5e-03 | 2.4e-03 | 13 |
+| s2_d01 | 2 | 1 | 1.00 | 0.714 | **0.126** [0.099, 0.156] | 0.136 | 0.117 | 0.147 | 7.3e-03 | 1.1e-02 | 13 |
+| s2_d02 | 2 | 2 | 1.00 | 0.714 | **0.135** [0.107, 0.164] | 0.146 | 0.123 | 0.162 | 9.1e-03 | 1.4e-02 | 13 |
+| s2_d04 | 2 | 4 | 1.00 | 0.714 | **0.130** [0.106, 0.156] | 0.142 | 0.118 | 0.148 | 7.3e-03 | 1.1e-02 | 13 |
+| s2_d06 | 2 | 6 | 1.00 | 0.714 | **0.128** [0.105, 0.153] | 0.145 | 0.111 | 0.144 | 7.3e-03 | 1.1e-02 | 11 |
+| s2_d08 | 2 | 8 | 1.00 | 0.714 | **0.120** [0.095, 0.147] | 0.128 | 0.111 | 0.140 | 9.1e-03 | 1.4e-02 | 11 |
+| s2_d10 | 2 | 10 | 1.00 | 0.714 | **0.121** [0.097, 0.146] | 0.132 | 0.110 | 0.138 | 9.1e-03 | 1.4e-02 | 11 |
+| s2_d12 | 2 | 12 | 1.00 | 0.714 | **0.126** [0.103, 0.150] | 0.142 | 0.109 | 0.138 | 9.1e-03 | 1.4e-02 | 11 |
+| s3_d00 | 3 | 0 | 0.67 | - | **0.115** [0.093, 0.136] | 0.118 | 0.112 | 0.127 | 3.0e-03 | 4.7e-03 | 13 |
+| s3_d01 | 3 | 1 | 0.67 | - | **0.180** [0.145, 0.213] | 0.223 | 0.137 | 0.198 | 1.1e-02 | 1.8e-02 | 22 |
+| s3_d02 | 3 | 2 | 0.67 | - | **0.194** [0.161, 0.227] | 0.237 | 0.151 | 0.217 | 1.1e-02 | 1.8e-02 | 22 |
+| s3_d04 | 3 | 4 | 0.67 | - | **0.199** [0.162, 0.234] | 0.249 | 0.149 | 0.219 | 1.4e-02 | 2.2e-02 | 22 |
+| s3_d06 | 3 | 6 | 0.67 | - | **0.188** [0.155, 0.221] | 0.241 | 0.136 | 0.216 | 1.4e-02 | 2.2e-02 | 14 |
+| s3_d08 | 3 | 8 | 0.67 | - | **0.195** [0.159, 0.227] | 0.258 | 0.132 | 0.214 | 1.4e-02 | 2.2e-02 | 14 |
+| s3_d10 | 3 | 10 | 0.67 | - | **0.198** [0.164, 0.229] | 0.247 | 0.149 | 0.212 | 1.4e-02 | 2.2e-02 | 14 |
+| s3_d12 | 3 | 12 | 0.67 | - | **0.186** [0.154, 0.217] | 0.230 | 0.142 | 0.205 | 1.4e-02 | 2.2e-02 | 14 |
+| s3_dfinal | 3 | final | 0.67 | - | **0.134** [0.111, 0.159] | 0.145 | 0.123 | 0.160 | 1.4e-02 | 1.8e-02 | 13 |
+
+*(Observations from CL)*
+
+Large improvement overall 0.082 → 0.199.
+
+### Big improvement from separate thresholds
+
+`s3_dfinal` >> `s3_c4` and `s2_d04` >> `blk03`, where the only differences are the thresholding and new label argmax rule.
+
+### Some ViT blocks help
+
+Depth 0 (post patch embed, before any ViT blocks) is not the best overall, and much worse than depth 1. Best seems to be depth ~4.
+
+### Upsampling helps
+
+Scale 3 consistently outperforms scale 2, despite the artificial upsampling beyond the native resolution. Although nb we are at subcell=4, so scale 2 prediction is coarser.
