@@ -1,0 +1,18 @@
+task: task4
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+output_root: experiments/fomo_tune_baseline_task4/output
+name: s4_c8_d04
+scale: 4
+subcell: 8
+target_sigma_mm: 0.0
+depth: 4
+alphas:
+- 1000.0
+- 10000.0
+- 100000.0
+- 1000000.0
+- 10000000.0
+- 100000000.0
+n_splits: 5
+device: cuda
+seed: 4466

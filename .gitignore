@@ -32,6 +32,8 @@ uv.lock
 *.npz
 *.sif
 *.joblib
+*.nii.gz
+model/
 
 # Output directories.
 # An experiment's run dirs keep their text record -- the 5G .sif, the fitted
@@ -39,6 +41,8 @@ uv.lock
 /checkpoints/
 /output/
 /wandb/
+# a saved fold is a whole model dir, so its config is just the run's config again
+folds/
 
 # Local scratch/tmp
 .scratch
