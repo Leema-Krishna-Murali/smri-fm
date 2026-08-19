@@ -1,6 +1,5 @@
-"""Markdown table of every run in `output/`, geometry sweep first, then the block sweep."""
-
 import json
+import fnmatch
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -16,6 +15,8 @@ HEADER = (
 )
 RULE = "|---" * 12 + "|"
 
+GLOBS = ("blk??", "s?_c?")
+
 
 def main() -> None:
     rows = []
@@ -24,7 +25,7 @@ def main() -> None:
         if not metrics_path.exists():
             continue
         cfg = OmegaConf.load(run_dir / "config.yaml")
-        if "block" not in cfg:  # a sweep C run, which shares this output dir; see collect_depth.py
+        if not any(fnmatch.fnmatch(run_dir.name, glob) for glob in GLOBS):
             continue
         metrics = json.loads(metrics_path.read_text())
         cell_mm = 8.0 / (cfg.scale * cfg.subcell)
@@ -33,7 +34,7 @@ def main() -> None:
     rows.sort(
         key=lambda row: (
             row[0].block if row[0].block is not None else -1,
-            -row[0].scale,
+            row[0].scale,
             row[0].subcell,
         )
     )

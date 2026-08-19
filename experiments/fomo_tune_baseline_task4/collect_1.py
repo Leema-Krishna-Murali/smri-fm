@@ -1,6 +1,6 @@
-"""Markdown table of sweep C, shallowest depth first. Sweeps A and B are `collect.py`."""
-
+import argparse
 import json
+import fnmatch
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -11,25 +11,42 @@ CEILING_BY_CELL_MM = {8.0: 0.074, 4.0: 0.217, 2.0: 0.459, 1.0: 0.714, 0.5: 1.000
 OUT_DIR = Path(__file__).parent / "output"
 
 HEADER = (
-    "| run | scale | depth | cell mm | ceiling | dice | nerve | vessel | oracle "
+    "| run | scale | subcell | cell mm | depth | ceiling | dice | nerve | vessel | oracle "
     "| nerve cut | vessel cut | min |"
 )
-RULE = "|---" * 12 + "|"
+RULE = "|---" * 13 + "|"
+
+SWEEPS = {
+    "depth": ("s?_d*",),
+    "scale": ("s?_c?_d??",),
+}
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sweep", choices=sorted(SWEEPS), default="depth")
+    args = parser.parse_args()
+    globs = SWEEPS[args.sweep]
+
     rows = []
     for run_dir in sorted(OUT_DIR.iterdir()):
         metrics_path = run_dir / "metrics.json"
         if not metrics_path.exists():
             continue
         cfg = OmegaConf.load(run_dir / "config.yaml")
-        if "depth" not in cfg:  # a sweep A or B run, which shares this output dir
+        if not any(fnmatch.fnmatch(run_dir.name, glob) for glob in globs):
             continue
-        rows.append((cfg, json.loads(metrics_path.read_text()), 8.0 / (cfg.scale * cfg.subcell)))
+        metrics = json.loads(metrics_path.read_text())
+        cell_mm = 8.0 / (cfg.scale * cfg.subcell)
+        rows.append((cfg, metrics, cell_mm))
 
-    # the full model is depth 24, which a 0-23 pre-hook cannot reach, so it sorts as such
-    rows.sort(key=lambda row: (row[0].scale, 24 if row[0].depth is None else row[0].depth))
+    rows.sort(
+        key=lambda row: (
+            row[0].scale,
+            row[0].subcell,
+            row[0].depth if row[0].depth is not None else 24,
+        )
+    )
 
     print(HEADER)
     print(RULE)
@@ -37,8 +54,9 @@ def main() -> None:
         ceiling = CEILING_BY_CELL_MM.get(round(cell_mm, 3))
         nerve_cut, vessel_cut = metrics["thresholds"]
         print(
-            f"| {cfg.name} | {cfg.scale} | {'final' if cfg.depth is None else cfg.depth} "
-            f"| {cell_mm:.2f} | {'-' if ceiling is None else f'{ceiling:.3f}'} "
+            f"| {cfg.name} | {cfg.scale} | {cfg.subcell} | {cell_mm:.2f} "
+            f"| {24 if cfg.depth is None else cfg.depth} "
+            f"| {'-' if ceiling is None else f'{ceiling:.3f}'} "
             f"| **{metrics['dice']:.3f}** [{metrics['dice_ci_low']:.3f}, "
             f"{metrics['dice_ci_high']:.3f}] "
             f"| {metrics['dice_nerve']:.3f} | {metrics['dice_vessel']:.3f} "
