@@ -100,3 +100,32 @@ uv run python model_box.py     # -> figures/model_box.png
 Sides are the two nerve components ordered by mean R, with each vessel component assigned to the
 nearer nerve, so the table is per side and not per component. Intensity is quoted against the
 side's label bounding box grown by 10 voxels, since the volumes have no common scale.
+
+## Looking at what a baseline run predicts (2026-08-19)
+
+Two figures over `../fomo_tune_baseline_task4/output/<run>/`, defaulting to `s4_c4_d04`.
+
+```bash
+uv run python figure_curves.py --run s4_c4_d04        # -> figures/s4_c4_d04_curves.png
+uv run python figure_predictions.py --run s4_c4_d04   # -> figures/s4_c4_d04_predictions.png
+```
+
+- `*_curves.png` — off `curves.npz` alone: Dice against each cut, the per-subject scores at the
+  global cut with each subject's oracle marked, and claimed against true voxels.
+- `*_predictions.png` — six subjects best to worst, four rows each: the head with the display box
+  outlined, the box, then nerve and vessel painted hit / false / missed. Box and slices are
+  `model_box.py`'s, so the panels line up with `model_box.png`.
+
+**The panels are optimistic.** A fold is saved at its own subject's oracle cut, so the row labels
+carry `oracle / global`. Drawing the global-cut version means recomputing scores from
+`folds/<subject>/head.joblib`, ~14s a subject.
+
+The threshold peaks are sharp because Dice peaks near claimed = true volume and the claim moves
+x27 per x1.5 of cut. Subject spread dwarfs everything else: nerve Dice runs 0.672 to 0.000 at the
+one global cut.
+
+**A per-subject cut matched to a target volume scores the same**, 0.250 against 0.252, reading off
+the same curves (target = leave-one-out cohort median, 300 / 870 voxels). Matching each subject's
+own true volume reaches only 0.262 against a 0.275 oracle, so no volume rule buys much here. The
+case for one is robustness: it is invariant to a rescaled score field, where the fixed cut loses
+60% of its score to a x1.5 shift.
