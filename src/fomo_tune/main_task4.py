@@ -2,7 +2,7 @@
 
 Method (tune):
 
-1. Scale 0.5mm input to a target resolution (scale = 1, 2, 3 = 1mm, 0.5mm, 0.33mm), and
+1. Scale the 0.5mm input to `1 / scale` mm, so scale 2 is native and above that magnifies, and
    crop around an anchor relative to the subject's mask centroid.
 2. Extract patch features, `depth` blocks in. `depth=0` is the patch embedding, `depth=None`
    the full model post-norm.
@@ -65,10 +65,10 @@ class Config:
     ckpt_path: str = "hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth"
     output_root: str = "output/fomo_tune"
     name: str = "task4"
-    scale: int = 2
+    scale: int = 4
     subcell: int = 4
     target_sigma_mm: float = 0.0
-    depth: int | None = None
+    depth: int | None = 4
     alphas: list[float] = field(default_factory=lambda: [1e3, 1e4, 1e5, 1e6, 1e7, 1e8])
     n_splits: int = 5
     device: str = "cuda"
