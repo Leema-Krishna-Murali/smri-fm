@@ -1,0 +1,34 @@
+11:07:53 run task3_camcan (git a66ed36-dirty)
+11:07:53 config:
+task: task3
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+output_root: experiments/task3_camcan_baseline/output
+name: task3_camcan
+evals:
+- camcan
+device: cuda
+seed: 4466
+11:09:10 dataset: 494 subjects, age 19-80 mean 45.2
+11:16:28 fold 1/20 n=25 mae=3.91 (432s)
+11:16:46 fold 2/20 n=25 mae=4.50 (450s)
+11:16:56 fold 3/20 n=25 mae=3.74 (460s)
+11:17:06 fold 4/20 n=25 mae=3.58 (470s)
+11:17:15 fold 5/20 n=25 mae=3.57 (479s)
+11:17:23 fold 6/20 n=25 mae=3.12 (487s)
+11:17:32 fold 7/20 n=25 mae=3.42 (496s)
+11:17:43 fold 8/20 n=25 mae=3.12 (507s)
+11:17:53 fold 9/20 n=25 mae=3.74 (517s)
+11:18:04 fold 10/20 n=25 mae=4.20 (528s)
+11:18:45 fold 11/20 n=25 mae=3.22 (569s)
+11:18:54 fold 12/20 n=25 mae=3.50 (578s)
+11:19:04 fold 13/20 n=25 mae=3.39 (588s)
+11:19:14 fold 14/20 n=25 mae=4.17 (598s)
+11:19:24 fold 15/20 n=24 mae=4.36 (608s)
+11:19:33 fold 16/20 n=24 mae=4.15 (617s)
+11:19:43 fold 17/20 n=24 mae=3.66 (627s)
+11:19:52 fold 18/20 n=24 mae=3.54 (636s)
+11:19:59 fold 19/20 n=24 mae=3.42 (643s)
+11:20:08 fold 20/20 n=24 mae=3.53 (652s)
+11:20:09 result: pearson_r=0.9631  pearson_r_ci_low=0.9567  pearson_r_ci_high=0.9687  mae=3.6910  mae_ci_low=3.4464  mae_ci_high=3.9466  (652s)
+11:21:56 camcan: 481 subjects, age 18.6-89.0 mean 58.2
+11:29:07 camcan: pearson_r=0.4532  pearson_r_ci_low=0.3849  pearson_r_ci_high=0.5164  mae=29.3268  mae_ci_low=27.8932  mae_ci_high=30.8559
