@@ -27,6 +27,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from fomo_tune.backbone import load_backbone
+from fomo_tune.task1_support_volume import Task1SupportVolumeTransform
 from fomo_tune.utils import git_sha, set_seed, setup_logging
 
 logger = logging.getLogger("fomo_tune")
@@ -43,6 +44,7 @@ class Config:
     name: str = "task1"
     device: str = "cuda"
     seed: int = 4466
+    target_support_volume_ml: float | None = None
 
 
 # ---- method: the part we tune -----------------------------------------------------------
@@ -57,15 +59,28 @@ class Task1Method:
         self.device = torch.device(cfg.device)
         self.backbone.to(self.device).eval().requires_grad_(False)
         self.modalities = list(cfg.modalities)
+        self.support_volume_transform = None
+        if cfg.target_support_volume_ml is not None:
+            self.support_volume_transform = Task1SupportVolumeTransform(
+                target_volume_ml=cfg.target_support_volume_ml,
+                img_size=self.transform.img_size,
+            )
         self.cache: dict[str, np.ndarray] = {}
         self.head = None
 
     @torch.inference_mode()
     def features(self, images: Images) -> np.ndarray:
         """(D,) per subject. A pure function of the images, so training and inference agree."""
+        normalized_samples = None
+        if self.support_volume_transform is not None:
+            normalized_samples = self.support_volume_transform(images, self.modalities)
+
         pooled = []
         for modality in self.modalities:
-            sample = self.transform(images[modality])
+            if normalized_samples is None:
+                sample = self.transform(images[modality])
+            else:
+                sample = normalized_samples[modality]
             batch = {key: value[None].to(self.device) for key, value in sample.items()}
 
             with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):

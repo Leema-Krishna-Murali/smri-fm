@@ -42,6 +42,10 @@ uv run python -m fomo_tune.main_task1 predict \
     --model-dir output/fomo_tune/task1/model
 ```
 
+Task 1 can optionally normalize the DWI nonzero support to a fixed volume before encoding. Enable
+it during training with `target_support_volume_ml=1500`; the saved config applies the same setting
+at inference. The option is disabled by default.
+
 ## Submit
 
 > Nb: @clane9 will handle final build and submission to FOMO! You can ignore this section.
