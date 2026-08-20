@@ -40,6 +40,7 @@ class Config:
     ckpt_path: str = "hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth"
     output_root: str = "output/fomo_tune"
     name: str = "task3"
+    evals: tuple[str, ...] = ()
     device: str = "cuda"
     seed: int = 4466
 
@@ -217,7 +218,7 @@ def train(args: argparse.Namespace) -> None:
     logger.info(f"result: {scores}  ({run_time:.0f}s)")
 
     record["evals"] = {}
-    for eval_name in args.evals:
+    for eval_name in cfg.evals:
         holdout = list(eval_loaders[eval_name]())
         holdout_ages = np.array([row["age"] for row in holdout])
         logger.info(
@@ -261,12 +262,6 @@ def main() -> None:
     modes = parser.add_subparsers(required=True)
 
     train_parser = modes.add_parser("train", help="cross-validate over the task, then fit and save")
-    train_parser.add_argument(
-        "--evals",
-        nargs="*",
-        default=["camcan"],
-        help="holdout datasets to score with the fitted head, e.g. --evals camcan dlbs aomic",
-    )
     train_parser.add_argument("overrides", nargs="*", help="config overrides, e.g. device=cpu")
     train_parser.set_defaults(run=train)
 

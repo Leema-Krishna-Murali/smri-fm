@@ -210,7 +210,6 @@ def _fomo_task5_generator():
 # ---- CamCAN: age-matched T1w holdout for task 3 ----------------------------------------
 
 CAMCAN_REPO = os.getenv("CAMCAN_REPO", "medarc/CamCAN-T3")
-#Recommend setting HF Cache dir to /data/mihir-stuff/hf_cache_dir to avoid duplicate downloads if you're on Nebius.
 
 
 def load_camcan() -> Dataset:
