@@ -198,7 +198,6 @@ class Task2Method:
             weight_decay=1e-4,
         )
         ema = None
-        self.heads.train()
         for step in range(STEPS):
             token_crops, kept_crops, targets = [], [], []
             for batch_index in range(BATCH_SIZE):
@@ -230,7 +229,6 @@ class Task2Method:
             inputs = (tokens - self.mean) * self.inverse_std * kept
 
             optimizer.zero_grad(set_to_none=True)
-            losses = []
             for head, (_, positive_weight) in zip(self.heads, RECIPES):
                 with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
                     halo = HALO_TOKENS * 8
@@ -245,7 +243,6 @@ class Task2Method:
                     )
                     loss = bce + 1 - dice.mean()
                 loss.backward()
-                losses.append(float(loss.detach()))
             optimizer.step()
 
             if step == EMA_START:
@@ -263,7 +260,6 @@ class Task2Method:
                 for parameter, average in zip(head.parameters(), averages):
                     parameter.copy_(average)
         self.heads.eval()
-        logger.info(f"fit seed={seed} mean final grid loss={np.mean(losses):.3f}")
 
     def predict_proba(self, images: Images) -> nib.Nifti1Image:
         """Uniformly averaged voxel probabilities on the input image's native grid."""
