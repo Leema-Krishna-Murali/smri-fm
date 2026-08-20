@@ -85,6 +85,19 @@ def resample_nearest(
 # ---- method: the part we tune ---------------------------------------------------------------
 
 
+class Patches(NamedTuple):
+    """One subject's dense token and label grids, sampling locations, and token statistics."""
+
+    tokens: np.ndarray
+    kept: np.ndarray
+    seg: np.ndarray
+    positive: np.ndarray
+    brain_tokens: np.ndarray
+    sum: np.ndarray
+    square: np.ndarray
+    count: int
+
+
 class ProgressiveDecoder(nn.Module):
     """Three 2x upsampling stages turn the final 8mm token grid into 1mm voxel logits."""
 
@@ -125,8 +138,8 @@ class Task2Method:
         self.img_size = tuple(patchify.img_size)
         assert self.patch_size == (8, 8, 8)
 
-        self.cache: dict[str, dict] = {}
-        self.heads = None
+        self.cache: dict[str, Patches] = {}
+        self.head = None
         self.mean = None
         self.inverse_std = None
         self.threshold = None
@@ -145,12 +158,12 @@ class Task2Method:
         patch_ids = out["patch_ids"][0][keep].cpu().numpy()
         return features, patch_ids, sample["affine"].numpy()
 
-    def cached_subject(self, row: dict) -> dict:
+    def cached_patches(self, row: dict) -> Patches:
         """Dense token/label grids cached because leave-one-out revisits every subject."""
         if row["subject"] not in self.cache:
-            sparse, patch_ids, grid_affine = self.embed(row)
+            features, patch_ids, grid_affine = self.embed(row)
             dense = np.zeros((int(np.prod(self.grid_size)), 1024), dtype=np.float16)
-            dense[patch_ids] = sparse.astype(np.float16)
+            dense[patch_ids] = features.astype(np.float16)
             dense = np.moveaxis(dense.reshape(*self.grid_size, 1024), -1, 0)
             kept = np.zeros(int(np.prod(self.grid_size)), dtype=bool)
             kept[patch_ids] = True
@@ -159,24 +172,24 @@ class Task2Method:
             seg = repack(row["seg"])
             labels = np.asarray(seg.dataobj, dtype=np.float32).round()
             labels = resample_nearest(labels, seg.affine, grid_affine, self.img_size) > 0
-            self.cache[row["subject"]] = {
-                "tokens": np.pad(dense, ((0, 0),) + ((HALO_TOKENS, HALO_TOKENS),) * 3),
-                "kept": np.pad(kept, ((0, 0),) + ((HALO_TOKENS, HALO_TOKENS),) * 3),
-                "seg": labels,
-                "positive": np.argwhere(labels),
-                "brain_tokens": np.argwhere(kept[0]),
-                "sum": sparse.sum(0, dtype=np.float64),
-                "square": np.square(sparse, dtype=np.float64).sum(0),
-                "count": len(sparse),
-            }
+            self.cache[row["subject"]] = Patches(
+                np.pad(dense, ((0, 0),) + ((HALO_TOKENS, HALO_TOKENS),) * 3),
+                np.pad(kept, ((0, 0),) + ((HALO_TOKENS, HALO_TOKENS),) * 3),
+                labels,
+                np.argwhere(labels),
+                np.argwhere(kept[0]),
+                features.sum(0, dtype=np.float64),
+                np.square(features, dtype=np.float64).sum(0),
+                len(features),
+            )
         return self.cache[row["subject"]]
 
     def fit(self, rows: list[dict], seed: int) -> None:
         """Fit the entire decoder grid on one shared stream of balanced spatial crops."""
-        subjects = [self.cached_subject(row) for row in rows]
-        count = sum(subject["count"] for subject in subjects)
-        total = sum((subject["sum"] for subject in subjects), start=np.zeros(1024))
-        square = sum((subject["square"] for subject in subjects), start=np.zeros(1024))
+        subjects = [self.cached_patches(row) for row in rows]
+        count = sum(subject.count for subject in subjects)
+        total = sum((subject.sum for subject in subjects), start=np.zeros(1024))
+        square = sum((subject.square for subject in subjects), start=np.zeros(1024))
         mean = total / count
         variance = square / count - np.square(mean)
         self.mean = torch.from_numpy(mean.astype(np.float32)).to(self.device)[
@@ -188,11 +201,11 @@ class Task2Method:
 
         torch.manual_seed(seed)
         rng = np.random.default_rng(seed)
-        self.heads = nn.ModuleList([ProgressiveDecoder() for _ in RECIPES]).to(self.device)
+        self.head = nn.ModuleList([ProgressiveDecoder() for _ in RECIPES]).to(self.device)
         optimizer = torch.optim.AdamW(
             [
                 {"params": list(head.parameters()), "lr": learning_rate}
-                for head, (learning_rate, _) in zip(self.heads, RECIPES)
+                for head, (learning_rate, _) in zip(self.head, RECIPES)
             ],
             lr=0.0,
             weight_decay=1e-4,
@@ -203,9 +216,9 @@ class Task2Method:
             for batch_index in range(BATCH_SIZE):
                 subject = subjects[(step * BATCH_SIZE + batch_index) % len(subjects)]
                 if batch_index < BATCH_SIZE // 2:
-                    center = subject["positive"][rng.integers(len(subject["positive"]))] // 8
+                    center = subject.positive[rng.integers(len(subject.positive))] // 8
                 else:
-                    center = subject["brain_tokens"][rng.integers(len(subject["brain_tokens"]))]
+                    center = subject.brain_tokens[rng.integers(len(subject.brain_tokens))]
                 origin = np.clip(
                     center - rng.integers(1, CORE_TOKENS, size=3),
                     0,
@@ -214,14 +227,14 @@ class Task2Method:
                 ox, oy, oz = (int(value) for value in origin)
                 width = CORE_TOKENS + 2 * HALO_TOKENS
                 token_crops.append(
-                    subject["tokens"][:, ox : ox + width, oy : oy + width, oz : oz + width]
+                    subject.tokens[:, ox : ox + width, oy : oy + width, oz : oz + width]
                 )
                 kept_crops.append(
-                    subject["kept"][:, ox : ox + width, oy : oy + width, oz : oz + width]
+                    subject.kept[:, ox : ox + width, oy : oy + width, oz : oz + width]
                 )
                 x, y, z = ox * 8, oy * 8, oz * 8
                 voxels = CORE_TOKENS * 8
-                targets.append(subject["seg"][None, x : x + voxels, y : y + voxels, z : z + voxels])
+                targets.append(subject.seg[None, x : x + voxels, y : y + voxels, z : z + voxels])
 
             tokens = torch.from_numpy(np.stack(token_crops)).to(self.device, dtype=torch.float32)
             kept = torch.from_numpy(np.stack(kept_crops)).to(self.device)
@@ -229,7 +242,7 @@ class Task2Method:
             inputs = (tokens - self.mean) * self.inverse_std * kept
 
             optimizer.zero_grad(set_to_none=True)
-            for head, (_, positive_weight) in zip(self.heads, RECIPES):
+            for head, (_, positive_weight) in zip(self.head, RECIPES):
                 with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
                     halo = HALO_TOKENS * 8
                     logits = head(inputs)[:, :, halo:-halo, halo:-halo, halo:-halo]
@@ -248,18 +261,18 @@ class Task2Method:
             if step == EMA_START:
                 ema = [
                     [parameter.detach().clone() for parameter in head.parameters()]
-                    for head in self.heads
+                    for head in self.head
                 ]
             elif step > EMA_START:
-                for averages, head in zip(ema, self.heads):
+                for averages, head in zip(ema, self.head):
                     for average, parameter in zip(averages, head.parameters()):
                         average.lerp_(parameter.detach(), 1 - EMA_DECAY)
 
         with torch.no_grad():
-            for averages, head in zip(ema, self.heads):
+            for averages, head in zip(ema, self.head):
                 for parameter, average in zip(head.parameters(), averages):
                     parameter.copy_(average)
-        self.heads.eval()
+        self.head.eval()
 
     def predict_proba(self, images: Images) -> nib.Nifti1Image:
         """Uniformly averaged voxel probabilities on the input image's native grid."""
@@ -279,8 +292,8 @@ class Task2Method:
             torch.inference_mode(),
             torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"),
         ):
-            for head in self.heads:
-                probability += torch.sigmoid(head(inputs)[0, 0].float()) / len(self.heads)
+            for head in self.head:
+                probability += torch.sigmoid(head(inputs)[0, 0].float()) / len(self.head)
 
         image = repack(images[self.modality])
         on_input = resample_nearest(
@@ -307,12 +320,12 @@ class Task2Method:
         return nib.Nifti1Image(mask.astype(np.uint8), probabilities.affine)
 
     def save(self, model_dir: Path) -> None:
-        """Config, heads and threshold; the backbone weights stay wherever `ckpt_path` points."""
+        """Config, head and threshold; the backbone weights stay wherever `ckpt_path` points."""
         model_dir.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(self.cfg, model_dir / "config.yaml")
         torch.save(
             {
-                "heads": self.heads.state_dict(),
+                "head": self.head.state_dict(),
                 "mean": self.mean.cpu(),
                 "inverse_std": self.inverse_std.cpu(),
                 "threshold": self.threshold,
@@ -328,9 +341,9 @@ class Task2Method:
         )
         method = cls(cfg)
         state = torch.load(model_dir / "head.pt", map_location=method.device, weights_only=True)
-        method.heads = nn.ModuleList([ProgressiveDecoder() for _ in RECIPES]).to(method.device)
-        method.heads.load_state_dict(state["heads"])
-        method.heads.eval()
+        method.head = nn.ModuleList([ProgressiveDecoder() for _ in RECIPES]).to(method.device)
+        method.head.load_state_dict(state["head"])
+        method.head.eval()
         method.mean = state["mean"].to(method.device)
         method.inverse_std = state["inverse_std"].to(method.device)
         method.threshold = state["threshold"]
