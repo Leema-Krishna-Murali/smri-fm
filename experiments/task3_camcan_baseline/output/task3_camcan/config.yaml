@@ -1,0 +1,8 @@
+task: task3
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+output_root: experiments/task3_camcan_baseline/output
+name: task3_camcan
+evals:
+- camcan
+device: cuda
+seed: 4466

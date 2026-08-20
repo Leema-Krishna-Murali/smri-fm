@@ -99,6 +99,12 @@ Oracle is the per-subject best threshold — the ceiling any thresholding rule c
 | baseline | 0.963 | 0.957 – 0.969 | 3.69 | 3.45 – 3.95 | 306s | `1df2e5d`† | t1w, `RidgeCV` head |
 | walnut-v0.1 | 0.968 | 0.963 – 0.972 | 3.50 | 3.29 – 3.74 | 261s | `ead1264` | vitl/sub-52k checkpoint, baseline otherwise |
 
+**CamCAN OOD transfer**
+
+| Run | Pearson r | 95% CI | MAE (y) | 95% CI | Time | Git | Notes |
+|---|---|---|---|---|---|---|---|
+| baseline | 0.453 | 0.385 – 0.516 | 29.33 | 27.89 – 30.86 | 431s | `a66ed36`-dirty | head fit on all 494 |
+
 ### Task 4 — trigeminal, mean Dice over the two labels, LOO over 40
 
 | Run | Dice | 95% CI | Oracle | Time | Git | Notes |
