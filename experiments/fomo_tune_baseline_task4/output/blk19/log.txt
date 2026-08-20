@@ -1,0 +1,62 @@
+12:34:26 run blk19 (git 69c2d36)
+12:34:26 config:
+task: task4
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+output_root: experiments/fomo_tune_baseline_task4/output
+name: blk19
+scale: 2
+subcell: 4
+target_sigma_mm: 0.0
+block: 19
+alphas:
+- 10.0
+- 100.0
+- 1000.0
+- 10000.0
+- 100000.0
+- 1000000.0
+n_splits: 5
+device: cuda
+seed: 4466
+12:35:09 dataset: 40 subjects
+12:48:17 fold 1/40 sub-01 mean=0.078 at thr=1.14e-02 oracle nerve=0.016 vessel=0.155 alpha=1e+04 score_max=0.0196 candidates=6332888 (165s)
+12:49:11 fold 2/40 sub-02 mean=0.021 at thr=9.14e-03 oracle nerve=0.006 vessel=0.041 alpha=1e+04 score_max=0.0224 candidates=6165016 (218s)
+12:49:36 fold 3/40 sub-03 mean=0.042 at thr=4.69e-03 oracle nerve=0.072 vessel=0.012 alpha=1e+04 score_max=0.0191 candidates=6272956 (244s)
+12:50:09 fold 4/40 sub-04 mean=0.096 at thr=1.43e-02 oracle nerve=0.038 vessel=0.192 alpha=1e+04 score_max=0.0216 candidates=6070282 (277s)
+12:50:33 fold 5/40 sub-05 mean=0.092 at thr=1.14e-02 oracle nerve=0.020 vessel=0.184 alpha=1e+04 score_max=0.0171 candidates=6891248 (300s)
+12:51:02 fold 6/40 sub-06 mean=0.043 at thr=1.14e-02 oracle nerve=0.059 vessel=0.073 alpha=1e+04 score_max=0.0175 candidates=6689528 (330s)
+12:51:35 fold 7/40 sub-07 mean=0.096 at thr=1.43e-02 oracle nerve=0.007 vessel=0.191 alpha=1e+04 score_max=0.0185 candidates=6617112 (363s)
+12:52:13 fold 8/40 sub-08 mean=0.027 at thr=1.78e-02 oracle nerve=0.014 vessel=0.054 alpha=1e+04 score_max=0.0198 candidates=6403044 (401s)
+12:52:53 fold 9/40 sub-09 mean=0.031 at thr=1.43e-02 oracle nerve=0.051 vessel=0.017 alpha=1e+04 score_max=0.0236 candidates=6366964 (441s)
+12:53:29 fold 10/40 sub-10 mean=0.057 at thr=1.43e-02 oracle nerve=0.000 vessel=0.114 alpha=1e+04 score_max=0.0252 candidates=6287236 (477s)
+12:54:11 fold 11/40 sub-11 mean=0.027 at thr=1.14e-02 oracle nerve=0.000 vessel=0.053 alpha=1e+04 score_max=0.0215 candidates=6440888 (518s)
+12:55:07 fold 12/40 sub-12 mean=0.079 at thr=1.43e-02 oracle nerve=0.000 vessel=0.158 alpha=1e+04 score_max=0.0221 candidates=6479482 (574s)
+12:56:02 fold 13/40 sub-13 mean=0.024 at thr=1.14e-02 oracle nerve=0.000 vessel=0.048 alpha=1e+04 score_max=0.0235 candidates=6156634 (629s)
+12:56:54 fold 14/40 sub-14 mean=0.086 at thr=1.14e-02 oracle nerve=0.094 vessel=0.150 alpha=1e+04 score_max=0.0191 candidates=6539436 (681s)
+12:57:55 fold 15/40 sub-15 mean=0.077 at thr=1.43e-02 oracle nerve=0.000 vessel=0.154 alpha=1e+04 score_max=0.0213 candidates=6251006 (742s)
+12:58:54 fold 16/40 sub-16 mean=0.032 at thr=1.14e-02 oracle nerve=0.000 vessel=0.064 alpha=1e+04 score_max=0.0172 candidates=6563986 (802s)
+12:59:55 fold 17/40 sub-17 mean=0.099 at thr=1.14e-02 oracle nerve=0.094 vessel=0.141 alpha=1e+04 score_max=0.0216 candidates=6674796 (862s)
+13:00:47 fold 18/40 sub-18 mean=0.063 at thr=1.78e-02 oracle nerve=0.011 vessel=0.127 alpha=1e+04 score_max=0.0243 candidates=6217110 (915s)
+13:01:49 fold 19/40 sub-19 mean=0.037 at thr=9.14e-03 oracle nerve=0.025 vessel=0.073 alpha=1e+04 score_max=0.0206 candidates=6873207 (977s)
+13:02:49 fold 20/40 sub-20 mean=0.023 at thr=1.43e-02 oracle nerve=0.000 vessel=0.045 alpha=1e+04 score_max=0.0202 candidates=6912488 (1036s)
+13:03:45 fold 21/40 sub-21 mean=0.056 at thr=1.14e-02 oracle nerve=0.052 vessel=0.098 alpha=1e+04 score_max=0.0198 candidates=6306308 (1093s)
+13:04:44 fold 22/40 sub-22 mean=0.051 at thr=1.78e-02 oracle nerve=0.000 vessel=0.101 alpha=1e+04 score_max=0.0225 candidates=6111348 (1152s)
+13:05:44 fold 23/40 sub-23 mean=0.026 at thr=7.32e-03 oracle nerve=0.031 vessel=0.036 alpha=1e+04 score_max=0.0191 candidates=6083133 (1211s)
+13:06:42 fold 24/40 sub-24 mean=0.076 at thr=1.43e-02 oracle nerve=0.003 vessel=0.152 alpha=1e+04 score_max=0.019 candidates=6490862 (1270s)
+13:07:45 fold 25/40 sub-25 mean=0.011 at thr=9.14e-03 oracle nerve=0.001 vessel=0.022 alpha=1e+04 score_max=0.017 candidates=6548352 (1333s)
+13:08:43 fold 26/40 sub-26 mean=0.101 at thr=7.32e-03 oracle nerve=0.156 vessel=0.067 alpha=1e+04 score_max=0.0226 candidates=6251716 (1390s)
+13:09:44 fold 27/40 sub-27 mean=0.056 at thr=1.43e-02 oracle nerve=0.057 vessel=0.112 alpha=1e+04 score_max=0.0185 candidates=6311651 (1452s)
+13:10:46 fold 28/40 sub-28 mean=0.113 at thr=1.43e-02 oracle nerve=0.000 vessel=0.225 alpha=1e+04 score_max=0.0217 candidates=6681488 (1513s)
+13:11:43 fold 29/40 sub-29 mean=0.087 at thr=7.32e-03 oracle nerve=0.098 vessel=0.144 alpha=1e+04 score_max=0.0204 candidates=6369082 (1571s)
+13:12:38 fold 30/40 sub-30 mean=0.104 at thr=1.43e-02 oracle nerve=0.017 vessel=0.208 alpha=1e+04 score_max=0.0228 candidates=6461984 (1625s)
+13:13:34 fold 31/40 sub-31 mean=0.033 at thr=1.43e-02 oracle nerve=0.012 vessel=0.066 alpha=1e+04 score_max=0.0178 candidates=6579276 (1681s)
+13:14:38 fold 32/40 sub-32 mean=0.034 at thr=1.43e-02 oracle nerve=0.000 vessel=0.068 alpha=1e+04 score_max=0.0222 candidates=6309337 (1746s)
+13:15:05 fold 33/40 sub-33 mean=0.040 at thr=1.14e-02 oracle nerve=0.000 vessel=0.081 alpha=1e+04 score_max=0.0225 candidates=6192260 (1773s)
+13:15:31 fold 34/40 sub-34 mean=0.075 at thr=1.14e-02 oracle nerve=0.046 vessel=0.149 alpha=1e+04 score_max=0.0238 candidates=6738268 (1799s)
+13:15:57 fold 35/40 sub-35 mean=0.048 at thr=9.14e-03 oracle nerve=0.039 vessel=0.067 alpha=1e+04 score_max=0.0189 candidates=6317383 (1825s)
+13:16:24 fold 36/40 sub-36 mean=0.070 at thr=1.43e-02 oracle nerve=0.000 vessel=0.140 alpha=1e+04 score_max=0.0229 candidates=6500274 (1852s)
+13:16:50 fold 37/40 sub-37 mean=0.071 at thr=1.43e-02 oracle nerve=0.091 vessel=0.143 alpha=1e+04 score_max=0.0222 candidates=6523934 (1877s)
+13:17:16 fold 38/40 sub-38 mean=0.097 at thr=9.14e-03 oracle nerve=0.138 vessel=0.125 alpha=1e+04 score_max=0.0224 candidates=6706284 (1904s)
+13:17:43 fold 39/40 sub-39 mean=0.101 at thr=9.14e-03 oracle nerve=0.140 vessel=0.063 alpha=1e+04 score_max=0.0246 candidates=6155404 (1930s)
+13:18:10 fold 40/40 sub-40 mean=0.038 at thr=7.32e-03 oracle nerve=0.028 vessel=0.072 alpha=1e+04 score_max=0.0203 candidates=6687448 (1957s)
+13:18:17 result: dice=0.0503  dice_ci_low=0.0412  dice_ci_high=0.0594  dice_nerve=0.0040  dice_vessel=0.0966  dice_oracle=0.0604  threshold=0.0143  (1957s)
