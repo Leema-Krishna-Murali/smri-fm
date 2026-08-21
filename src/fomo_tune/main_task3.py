@@ -38,7 +38,7 @@ Images = dict[str, nib.Nifti1Image]
 @dataclass
 class Config:
     task: str = "task3"
-    ckpt_path: str = "hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth"
+    ckpt_path: str = "hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth"
     output_root: str = "output/fomo_tune"
     name: str = "task3"
     evals: tuple[str, ...] = ()
@@ -279,8 +279,6 @@ def predict(args: argparse.Namespace) -> None:
     overrides = {"device": args.device}
     if args.ckpt_path:
         overrides["ckpt_path"] = args.ckpt_path
-    if args.tta:
-        overrides["tta"] = True
     method = Task3Method.load(args.model_dir, **overrides)
 
     age = method.predict({"t1w": nib.load(args.t1)})
@@ -302,11 +300,6 @@ def main() -> None:
     predict_parser.add_argument("--model-dir", type=Path, default=Path("/app/model"))
     predict_parser.add_argument("--ckpt-path", help="overrides the trained config's backbone path")
     predict_parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    predict_parser.add_argument(
-        "--tta",
-        action="store_true",
-        help="K2 matched weighted TTA (already the default; kept so the flag is explicit)",
-    )
     predict_parser.set_defaults(run=predict)
 
     args = parser.parse_args()
