@@ -24,7 +24,8 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 from scipy.special import expit
-from sklearn.linear_model import LogisticRegressionCV
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -47,6 +48,12 @@ class Pooling(str, Enum):
     ensemble = "ensemble"
 
 
+class Head(str, Enum):
+    logistic_cv = "logistic_cv"
+    logistic = "logistic"
+    lda = "lda"
+
+
 @dataclass
 class Config:
     task: str = "task1"
@@ -62,6 +69,10 @@ class Config:
     masking: str = "mean"
     normalize_volume: bool = False
     normalize_test_volume: bool = False
+    head: Head = Head.logistic_cv
+    head_scoring: str = "roc_auc"
+    head_C: float = 1.0
+    scaler: bool = True
 
 
 class Embedding(NamedTuple):
@@ -71,17 +82,24 @@ class Embedding(NamedTuple):
     scale: float
 
 
-def fit_head(X: np.ndarray, y: np.ndarray) -> Pipeline:
-    clf = LogisticRegressionCV(
-        Cs=10,
-        class_weight="balanced",
-        scoring="roc_auc",
-        max_iter=1000,
-        l1_ratios=(0,),
-        use_legacy_attributes=False,
-    )
-    head = make_pipeline(StandardScaler(), clf)
-    return head.fit(X, y)
+def fit_head(cfg: Config, X: np.ndarray, y: np.ndarray) -> Pipeline:
+    if cfg.head is Head.lda:
+        # Ledoit-Wolf shrinkage, closed form, no inner CV. `lsqr` is what supports shrinkage.
+        clf = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+    elif cfg.head is Head.logistic:
+        clf = LogisticRegression(C=cfg.head_C, class_weight="balanced", max_iter=1000)
+    else:
+        clf = LogisticRegressionCV(
+            Cs=10,
+            class_weight="balanced",
+            scoring=cfg.head_scoring,
+            max_iter=1000,
+            l1_ratios=(0,),
+            use_legacy_attributes=False,
+        )
+
+    steps = [StandardScaler(), clf] if cfg.scaler else [clf]
+    return make_pipeline(*steps).fit(X, y)
 
 
 def support_volume_ml(img: nib.Nifti1Image) -> float:
@@ -227,9 +245,9 @@ class Task1Method:
             X = local_X
             if self.cfg.pooling is Pooling.ensemble:
                 X = np.stack([embedding.pooled for embedding in embeddings])
-                self.local_head = fit_head(local_X, y)
+                self.local_head = fit_head(self.cfg, local_X, y)
 
-        self.head = fit_head(X, y)
+        self.head = fit_head(self.cfg, X, y)
         self.positive = list(self.head.classes_).index(1)
         if self.cfg.pooling is Pooling.ensemble:
             logits = np.stack(
