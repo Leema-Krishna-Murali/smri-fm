@@ -135,7 +135,7 @@ class Task1Method:
         scale = 1.0
         if self.cfg.normalize_volume:
             scale = volume_scale_factor(images[VOLUME_REFERENCE_MODALITY], TARGET_VOLUME_ML)
-            images = {key: scale_image(image, scale) for key, image in images.items()}
+            images = {key: scale_image(images[key], scale) for key in self.modalities}
 
         embeddings = []
         for modality in self.modalities:
