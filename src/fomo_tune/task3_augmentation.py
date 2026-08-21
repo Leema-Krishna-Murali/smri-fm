@@ -1,10 +1,3 @@
-"""K2 acquisition/domain views for FOMO task 3, at the original 1.0x Paul strength.
-
-Draw 0 is the legacy `sum(ord(subject))` seed. Draw 1 uses SHA-256 subject entropy so the two
-draws are nested and collision-free. Clean is included once; each family's weight is split across
-the two draws so every subject still sums to one.
-"""
-
 import hashlib
 from collections.abc import Generator
 
@@ -136,7 +129,6 @@ def change_pose(
 def augment_draw(
     row: dict, seed: int, draw: int, seed_namespace: str = "fomo"
 ) -> Generator[dict, None, None]:
-    """One clean and six fixed-strength acquisition/domain views for a single draw."""
     image = row["t1w"]
     source_data = image.get_fdata(dtype=np.float32)
     source_mask = source_data > 0
@@ -255,7 +247,6 @@ def augment_draw(
 
 
 def k2_views(row: dict, seed: int, seed_namespace: str = "fomo") -> Generator[dict, None, None]:
-    """Clean once, then the six families at draw 0 and draw 1. Weights sum to one."""
     for view in augment_draw(row, seed, 0, seed_namespace):
         yield view
     for view in augment_draw(row, seed, 1, seed_namespace):

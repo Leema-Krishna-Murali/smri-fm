@@ -51,7 +51,7 @@ class Config:
 
 
 class Task3Method:
-    """Walnut ViT-L, block-16 mean-pooled tokens, K2 1.0x ridge, K2 weighted TTA at test."""
+    """Frozen sMRI MAE, mean-pooled tokens over the t1w, ridge head."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -100,8 +100,6 @@ class Task3Method:
         y = np.array(ages, dtype=float)
         sample_weight = np.array(weights, dtype=float)
         clean = np.array(clean, dtype=bool)
-
-        # RidgeCV picks alpha on clean views only; the fold split is never used for selection
         selector = make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(-3, 6, 19)))
         selector.fit(X[clean], y[clean])
         self.head = make_pipeline(StandardScaler(), Ridge(alpha=float(selector[-1].alpha_)))
@@ -113,7 +111,7 @@ class Task3Method:
         )
 
     def predict(self, images: Images) -> float:
-        """Age in years. K2 weighted TTA; set tta=false for the clean scan only."""
+        """Age in years."""
         if not self.cfg.tta:
             return float(self.head.predict(self.features(images)[None])[0])
         row = {"subject": "t1", "age": 0.0, "t1w": images["t1w"]}
