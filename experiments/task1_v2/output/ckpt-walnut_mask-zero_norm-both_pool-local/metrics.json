@@ -1,0 +1,1 @@
+{"name": "ckpt-walnut_mask-zero_norm-both_pool-local", "auroc": 0.951923076923077, "auroc_ci_low": 0.8163265306122449, "auroc_ci_high": 1.0, "run_time": 682.1}

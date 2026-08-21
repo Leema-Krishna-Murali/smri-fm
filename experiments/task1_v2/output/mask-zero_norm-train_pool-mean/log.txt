@@ -1,0 +1,39 @@
+14:32:09 run mask-zero_norm-train_pool-mean (git 82c3fb9)
+14:32:09 config:
+task: task1
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+modalities:
+- dwi_b1000
+output_root: experiments/task1_v2/output
+name: mask-zero_norm-train_pool-mean
+device: cuda
+seed: 4466
+pooling: mean
+sweet_k: 8
+top_k: 32
+masking: zero
+normalize_volume: true
+normalize_test_volume: false
+14:32:11 dataset: 21 subjects, 13 positive
+14:32:35 fold 1/21 sub-01 y=1 p=0.507 (16s)
+14:32:42 fold 2/21 sub-02 y=1 p=0.519 (23s)
+14:32:47 fold 3/21 sub-03 y=0 p=0.001 (28s)
+14:32:50 fold 4/21 sub-04 y=1 p=0.508 (31s)
+14:32:55 fold 5/21 sub-05 y=1 p=0.503 (35s)
+14:32:58 fold 6/21 sub-06 y=1 p=0.494 (39s)
+14:33:01 fold 7/21 sub-07 y=0 p=0.029 (42s)
+14:33:06 fold 8/21 sub-08 y=0 p=0.495 (47s)
+14:33:12 fold 9/21 sub-09 y=1 p=0.525 (53s)
+14:33:19 fold 10/21 sub-10 y=1 p=0.515 (60s)
+14:33:25 fold 11/21 sub-11 y=0 p=0.481 (66s)
+14:33:29 fold 12/21 sub-12 y=0 p=0.471 (70s)
+14:33:34 fold 13/21 sub-13 y=1 p=0.513 (75s)
+14:33:38 fold 14/21 sub-14 y=1 p=0.526 (79s)
+14:33:42 fold 15/21 sub-15 y=0 p=0.492 (83s)
+14:33:47 fold 16/21 sub-16 y=0 p=0.420 (87s)
+14:33:51 fold 17/21 sub-17 y=1 p=0.527 (92s)
+14:33:56 fold 18/21 sub-18 y=1 p=0.509 (97s)
+14:34:02 fold 19/21 sub-19 y=1 p=0.512 (103s)
+14:34:07 fold 20/21 sub-20 y=1 p=0.520 (108s)
+14:34:10 fold 21/21 sub-21 y=0 p=0.506 (111s)
+14:34:13 result: auroc=0.9712  auroc_ci_low=0.8941  auroc_ci_high=1.0000  (111s)
