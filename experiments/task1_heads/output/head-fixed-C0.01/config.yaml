@@ -1,0 +1,18 @@
+task: task1
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+modalities:
+- dwi_b1000
+output_root: experiments/task1_heads/output
+name: head-fixed-C0.01
+device: cuda
+seed: 4466
+pooling: mean
+sweet_k: 8
+top_k: 32
+masking: zero
+normalize_volume: false
+normalize_test_volume: false
+head: logistic
+head_scoring: roc_auc
+head_C: 0.01
+scaler: true

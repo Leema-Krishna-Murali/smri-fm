@@ -1,0 +1,43 @@
+19:33:32 run walnut-ensemble_head-lda (git 6132025)
+19:33:32 config:
+task: task1
+ckpt_path: hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth
+modalities:
+- dwi_b1000
+output_root: experiments/task1_heads/output
+name: walnut-ensemble_head-lda
+device: cuda
+seed: 4466
+pooling: ensemble
+sweet_k: 8
+top_k: 32
+masking: zero
+normalize_volume: true
+normalize_test_volume: true
+head: lda
+head_scoring: roc_auc
+head_C: 1.0
+scaler: true
+19:33:35 dataset: 21 subjects, 13 positive
+19:34:46 fold 1/21 sub-01 y=1 p=0.610 (58s)
+19:35:22 fold 2/21 sub-02 y=1 p=0.676 (93s)
+19:35:59 fold 3/21 sub-03 y=0 p=0.304 (130s)
+19:36:35 fold 4/21 sub-04 y=1 p=0.428 (166s)
+19:37:11 fold 5/21 sub-05 y=1 p=0.720 (203s)
+19:37:41 fold 6/21 sub-06 y=1 p=0.590 (232s)
+19:38:04 fold 7/21 sub-07 y=0 p=0.356 (255s)
+19:38:23 fold 8/21 sub-08 y=0 p=0.188 (274s)
+19:38:45 fold 9/21 sub-09 y=1 p=0.691 (296s)
+19:39:08 fold 10/21 sub-10 y=1 p=0.504 (319s)
+19:39:36 fold 11/21 sub-11 y=0 p=0.239 (347s)
+19:39:59 fold 12/21 sub-12 y=0 p=0.154 (370s)
+19:40:22 fold 13/21 sub-13 y=1 p=0.653 (393s)
+19:40:50 fold 14/21 sub-14 y=1 p=0.696 (421s)
+19:41:16 fold 15/21 sub-15 y=0 p=0.365 (447s)
+19:41:36 fold 16/21 sub-16 y=0 p=0.227 (467s)
+19:41:54 fold 17/21 sub-17 y=1 p=0.785 (485s)
+19:42:12 fold 18/21 sub-18 y=1 p=0.616 (503s)
+19:42:29 fold 19/21 sub-19 y=1 p=0.561 (520s)
+19:42:46 fold 20/21 sub-20 y=1 p=0.679 (537s)
+19:43:02 fold 21/21 sub-21 y=0 p=0.386 (553s)
+19:43:21 result: auroc=1.0000  auroc_ci_low=1.0000  auroc_ci_high=1.0000  (553s)

@@ -1,0 +1,1 @@
+{"name": "mask-zero_norm-both_pool-local", "auroc": 0.7692307692307693, "auroc_ci_low": 0.530568092621664, "auroc_ci_high": 0.9694319073783357, "run_time": 102.5}

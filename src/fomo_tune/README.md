@@ -34,8 +34,6 @@ You can also use the data in `/data/smri-datasets` for one-off exploration. If y
 
 ```bash
 uv run python -m fomo_tune.main_task1 train
-uv run python -m fomo_tune.main_task1 train pooling=local
-uv run python -m fomo_tune.main_task1 train pooling=ensemble
 uv run python -m fomo_tune.main_task1 predict \
     --adc data/fomo_eval/Task_1/preprocessed/sub-01/ses-01/adc.nii.gz \
     --dwi data/fomo_eval/Task_1/preprocessed/sub-01/ses-01/dwi_b1000.nii.gz \
@@ -43,10 +41,6 @@ uv run python -m fomo_tune.main_task1 predict \
     --output prob.txt \
     --model-dir output/fomo_tune/task1/model
 ```
-
-Task 1 supports mean pooling, lesion-guided Sweet8/top32 local pooling, and a simple global.local ensemble
-(via standardized logits). It can independently normalize DWI brain volumes; enabled with `target_support_volume_ml=1500`. Both options are saved and applied at
-inference and disabled by default.
 
 ## Submit
 
@@ -87,6 +81,7 @@ uv run python third_party/container-validator/container_validator/validate.py \
 |---|---|---|---|---|---|
 | baseline | 0.990 | 0.944 – 1.000 | 11s | `1df2e5d`† | dwi_b1000 only, `LogisticRegressionCV` |
 | walnut-v0.1 | 0.894 | 0.731 – 1.000 | 11s | `ead1264` | vitl/sub-52k checkpoint, baseline otherwise |
+| walnut-v0.1 ensemble | 0.990 | 0.942 – 1.000 | 38s | `5e078be` | zero masking, ensemble pooling, volume-normalized — the current default |
 
 ### Task 2 — meningioma, Dice, LOO over 23
 

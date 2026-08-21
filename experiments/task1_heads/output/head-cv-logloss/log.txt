@@ -1,0 +1,43 @@
+19:24:12 run head-cv-logloss (git 6132025)
+19:24:12 config:
+task: task1
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+modalities:
+- dwi_b1000
+output_root: experiments/task1_heads/output
+name: head-cv-logloss
+device: cuda
+seed: 4466
+pooling: mean
+sweet_k: 8
+top_k: 32
+masking: zero
+normalize_volume: false
+normalize_test_volume: false
+head: logistic_cv
+head_scoring: neg_log_loss
+head_C: 1.0
+scaler: true
+19:24:14 dataset: 21 subjects, 13 positive
+19:24:28 fold 1/21 sub-01 y=1 p=0.960 (8s)
+19:24:29 fold 2/21 sub-02 y=1 p=0.983 (9s)
+19:24:32 fold 3/21 sub-03 y=0 p=0.222 (13s)
+19:24:35 fold 4/21 sub-04 y=1 p=0.021 (15s)
+19:24:38 fold 5/21 sub-05 y=1 p=0.892 (19s)
+19:24:41 fold 6/21 sub-06 y=1 p=0.390 (21s)
+19:24:43 fold 7/21 sub-07 y=0 p=0.191 (23s)
+19:24:45 fold 8/21 sub-08 y=0 p=0.051 (25s)
+19:24:48 fold 9/21 sub-09 y=1 p=0.984 (29s)
+19:24:52 fold 10/21 sub-10 y=1 p=0.999 (32s)
+19:24:56 fold 11/21 sub-11 y=0 p=0.013 (36s)
+19:25:01 fold 12/21 sub-12 y=0 p=0.004 (41s)
+19:25:04 fold 13/21 sub-13 y=1 p=0.979 (44s)
+19:25:05 fold 14/21 sub-14 y=1 p=1.000 (46s)
+19:25:07 fold 15/21 sub-15 y=0 p=0.121 (47s)
+19:25:09 fold 16/21 sub-16 y=0 p=0.004 (49s)
+19:25:10 fold 17/21 sub-17 y=1 p=0.986 (50s)
+19:25:11 fold 18/21 sub-18 y=1 p=0.982 (51s)
+19:25:12 fold 19/21 sub-19 y=1 p=0.967 (52s)
+19:25:12 fold 20/21 sub-20 y=1 p=0.942 (53s)
+19:25:13 fold 21/21 sub-21 y=0 p=0.514 (54s)
+19:25:16 result: auroc=0.9423  auroc_ci_low=0.8173  auroc_ci_high=1.0000  (54s)
