@@ -50,18 +50,18 @@ class Pooling(str, Enum):
 @dataclass
 class Config:
     task: str = "task1"
-    ckpt_path: str = "hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth"
+    ckpt_path: str = "hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth"
     modalities: list[str] = field(default_factory=lambda: ["dwi_b1000"])
     output_root: str = "output/fomo_tune"
     name: str = "task1"
     device: str = "cuda"
     seed: int = 4466
-    pooling: Pooling = Pooling.mean
+    pooling: Pooling = Pooling.ensemble
     sweet_k: int = 8
     top_k: int = 32
-    masking: str = "mean"
-    normalize_volume: bool = False
-    normalize_test_volume: bool = False
+    masking: str = "zero"
+    normalize_volume: bool = True
+    normalize_test_volume: bool = True
 
 
 class Embedding(NamedTuple):
