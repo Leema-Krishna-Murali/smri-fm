@@ -14,6 +14,7 @@ from pathlib import Path
 import torch
 from huggingface_hub import hf_hub_download
 from omegaconf import OmegaConf
+from SynthSeg_pytorch.predict import get_model_dir
 
 HERE = Path(__file__).parent
 
@@ -55,6 +56,9 @@ def main() -> None:
     shutil.copytree(model_dir, stage / "model")
     shutil.copy(HERE / "Apptainer.def", stage / "Apptainer.def")
     (stage / "predict.py").write_text(PREDICT_SHIM.format(module=f"main_{cfg.task}"))
+
+    # the container has no network, so the weights `get_model_dir` would fetch go in now
+    shutil.copy(Path(get_model_dir()) / "synthseg_2.0.h5", stage / "model" / "synthseg.h5")
 
     path = cfg.ckpt_path
     if path.startswith("hf://"):
