@@ -34,6 +34,8 @@ You can also use the data in `/data/smri-datasets` for one-off exploration. If y
 
 ```bash
 uv run python -m fomo_tune.main_task1 train
+uv run python -m fomo_tune.main_task1 train pooling=local
+uv run python -m fomo_tune.main_task1 train pooling=ensemble
 uv run python -m fomo_tune.main_task1 predict \
     --adc data/fomo_eval/Task_1/preprocessed/sub-01/ses-01/adc.nii.gz \
     --dwi data/fomo_eval/Task_1/preprocessed/sub-01/ses-01/dwi_b1000.nii.gz \
@@ -41,6 +43,10 @@ uv run python -m fomo_tune.main_task1 predict \
     --output prob.txt \
     --model-dir output/fomo_tune/task1/model
 ```
+
+Task 1 supports mean pooling, lesion-guided Sweet8/top32 local pooling, and a simple global.local ensemble
+(via standardized logits). It can independently normalize DWI brain volumes; enabled with `target_support_volume_ml=1500`. Both options are saved and applied at
+inference and disabled by default.
 
 ## Submit
 
