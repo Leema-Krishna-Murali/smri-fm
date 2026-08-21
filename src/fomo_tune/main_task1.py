@@ -37,6 +37,8 @@ logger = logging.getLogger("fomo_tune")
 Images = dict[str, nib.Nifti1Image]
 
 VOLUME_REFERENCE_MODALITY = "dwi_b1000"
+# geometric mean of the cohort's nonzero support, so scale factors land in 0.94-1.07
+TARGET_VOLUME_ML = 1350.0
 
 
 class Pooling(str, Enum):
@@ -58,8 +60,8 @@ class Config:
     sweet_k: int = 8
     top_k: int = 32
     masking: str = "mean"
-    target_volume_ml: float | None = None
-    test_volume_ml: float | None = None
+    normalize_volume: bool = False
+    normalize_test_volume: bool = False
 
 
 class Embedding(NamedTuple):
@@ -131,10 +133,8 @@ class Task1Method:
     @torch.inference_mode()
     def embeddings(self, images: Images) -> list[Embedding]:
         scale = 1.0
-        if self.cfg.target_volume_ml is not None:
-            scale = volume_scale_factor(
-                images[VOLUME_REFERENCE_MODALITY], self.cfg.target_volume_ml
-            )
+        if self.cfg.normalize_volume:
+            scale = volume_scale_factor(images[VOLUME_REFERENCE_MODALITY], TARGET_VOLUME_ML)
             images = {key: scale_image(image, scale) for key, image in images.items()}
 
         embeddings = []
@@ -298,7 +298,7 @@ IMAGE_COLS = ("adc", "dwi_b1000", "flair")
 
 
 def leave_one_out(
-    rows: list[dict], method: Task1Method, test_volume_ml: float | None = None
+    rows: list[dict], method: Task1Method, normalize_test_volume: bool = False
 ) -> tuple[np.ndarray, np.ndarray]:
     """Out-of-fold score for every subject, each predicted by a head fit on the other n-1."""
     y = np.array([row["label"] for row in rows])
@@ -307,8 +307,8 @@ def leave_one_out(
     for held_out, row in enumerate(rows):
         method.fit([r for r in rows if r["subject"] != row["subject"]])
         images = {key: row[key] for key in IMAGE_COLS}
-        if test_volume_ml is not None:
-            scale = volume_scale_factor(images[VOLUME_REFERENCE_MODALITY], test_volume_ml)
+        if normalize_test_volume:
+            scale = volume_scale_factor(images[VOLUME_REFERENCE_MODALITY], TARGET_VOLUME_ML)
             images = {key: scale_image(image, scale) for key, image in images.items()}
         oof[held_out] = method.predict(images)
         logger.info(
@@ -361,7 +361,7 @@ def train(args: argparse.Namespace) -> None:
 
     method = Task1Method(cfg)
     start = time.perf_counter()
-    y, oof = leave_one_out(rows, method, cfg.test_volume_ml)
+    y, oof = leave_one_out(rows, method, cfg.normalize_test_volume)
     run_time = time.perf_counter() - start
     summary = score(y, oof)
 
