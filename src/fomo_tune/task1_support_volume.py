@@ -58,7 +58,7 @@ class Task1SupportVolumeTransform:
 
     def __call__(
         self, images: Images, modalities: list[str]
-    ) -> dict[str, dict[str, torch.Tensor]]:
+    ) -> tuple[dict[str, dict[str, torch.Tensor]], float, np.ndarray]:
         grids = {modality: self.image_and_support(images[modality]) for modality in modalities}
         dwi_grid = grids.get("dwi_b1000")
         if dwi_grid is None:
@@ -83,4 +83,20 @@ class Task1SupportVolumeTransform:
                 "mask": support.unsqueeze(0),
                 "affine": torch.as_tensor(affine, dtype=torch.float32),
             }
-        return samples
+        return samples, scale, center
+
+    def lesion(self, image: nib.Nifti1Image, scale: float, center: np.ndarray) -> torch.Tensor:
+        image = nib.Nifti1Image(image.dataobj, image.affine, image.header)
+        image = nib.as_closest_canonical(nib.funcs.squeeze_image(image))
+        lesion = torch.from_numpy(np.ascontiguousarray(np.asarray(image.dataobj) > 0))
+        assert lesion.ndim == 3
+
+        spacing = image.header.get_zooms()[:3]
+        if max(abs(value - 1.0) for value in spacing) > 0.05:
+            lesion = F.interpolate(
+                lesion[None, None].float(),
+                scale_factor=tuple(float(value) for value in spacing),
+                mode="nearest-exact",
+            )[0, 0].bool()
+        lesion, _ = fit_to_shape(lesion, np.asarray(image.affine), self.img_size)
+        return self.scale_volume(lesion, scale, center, order=0).bool()

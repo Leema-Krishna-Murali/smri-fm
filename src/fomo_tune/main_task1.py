@@ -14,25 +14,35 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
+from typing import NamedTuple
 
 import joblib
 import nibabel as nib
 import numpy as np
 import torch
+import torch.nn.functional as F
 from omegaconf import OmegaConf
+from scipy.special import expit
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.metrics import roc_auc_score
-from sklearn.pipeline import make_pipeline
+from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from fomo_tune.backbone import load_backbone
+from fomo_tune.backbone import fit_to_shape, load_backbone
 from fomo_tune.task1_support_volume import Task1SupportVolumeTransform
 from fomo_tune.utils import git_sha, set_seed, setup_logging
 
 logger = logging.getLogger("fomo_tune")
 
 Images = dict[str, nib.Nifti1Image]
+
+
+class Pooling(str, Enum):
+    mean = "mean"
+    local = "local"
+    ensemble = "ensemble"
 
 
 @dataclass
@@ -44,14 +54,38 @@ class Config:
     name: str = "task1"
     device: str = "cuda"
     seed: int = 4466
+    pooling: Pooling = Pooling.mean
+    sweet_k: int = 8
+    top_k: int = 32
     target_support_volume_ml: float | None = None
+
+
+class Embedding(NamedTuple):
+    pooled: np.ndarray
+    tokens: np.ndarray
+    patch_ids: np.ndarray
+    volume_scale: float
+    volume_center: np.ndarray | None
+
+
+def fit_head(X: np.ndarray, y: np.ndarray) -> Pipeline:
+    clf = LogisticRegressionCV(
+        Cs=10,
+        class_weight="balanced",
+        scoring="roc_auc",
+        max_iter=1000,
+        l1_ratios=(0,),
+        use_legacy_attributes=False,
+    )
+    head = make_pipeline(StandardScaler(), clf)
+    return head.fit(X, y)
 
 
 # ---- method: the part we tune -----------------------------------------------------------
 
 
 class Task1Method:
-    """Frozen sMRI MAE, mean-pooled tokens per modality concatenated, logistic head."""
+    """Frozen sMRI MAE with a global, lesion-selected local, or ensembled probe."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -65,17 +99,30 @@ class Task1Method:
                 target_volume_ml=cfg.target_support_volume_ml,
                 img_size=self.transform.img_size,
             )
-        self.cache: dict[str, np.ndarray] = {}
         self.head = None
+        if cfg.pooling is Pooling.mean:
+            self.cache: dict[str, np.ndarray] = {}
+            return
+
+        assert len(self.modalities) == 1
+        assert cfg.sweet_k > 0 and cfg.top_k > 0
+        patchify = self.backbone.encoder.patchify
+        self.grid_size = tuple(patchify.grid_size)
+        self.patch_size = tuple(patchify.patch_size)
+        self.img_size = tuple(patchify.img_size)
+        self.embedding_cache: dict[str, Embedding] = {}
 
     @torch.inference_mode()
-    def features(self, images: Images) -> np.ndarray:
-        """(D,) per subject. A pure function of the images, so training and inference agree."""
+    def embeddings(self, images: Images) -> list[Embedding]:
         normalized_samples = None
+        volume_scale = 1.0
+        volume_center = None
         if self.support_volume_transform is not None:
-            normalized_samples = self.support_volume_transform(images, self.modalities)
+            normalized_samples, volume_scale, volume_center = self.support_volume_transform(
+                images, self.modalities
+            )
 
-        pooled = []
+        embeddings = []
         for modality in self.modalities:
             if normalized_samples is None:
                 sample = self.transform(images[modality])
@@ -88,35 +135,128 @@ class Task1Method:
 
             patch_embeds = out["patch_embeds"]
             token_mask = out["token_mask"].bool().unsqueeze(-1)
-            embed = (patch_embeds * token_mask).sum(dim=1) / token_mask.sum(dim=1)
-            pooled.append(embed[0].float().cpu())
+            pooled = (patch_embeds * token_mask).sum(dim=1) / token_mask.sum(dim=1)
 
-        return torch.cat(pooled).numpy()
+            keep = token_mask[0, :, 0]
+            tokens = patch_embeds[0][keep].float().cpu().numpy()
+            patch_ids = out["patch_ids"][0][keep].cpu().numpy()
+            embeddings.append(
+                Embedding(
+                    pooled[0].float().cpu().numpy(),
+                    tokens,
+                    patch_ids,
+                    volume_scale,
+                    volume_center,
+                )
+            )
+        return embeddings
+
+    def lesion_channel_contrast(self, embedding: Embedding, seg: nib.Nifti1Image) -> np.ndarray:
+        if self.support_volume_transform is None:
+            seg = nib.Nifti1Image(seg.dataobj, seg.affine, seg.header)
+            seg = nib.as_closest_canonical(nib.funcs.squeeze_image(seg))
+            lesion = torch.from_numpy(np.ascontiguousarray(np.asarray(seg.dataobj) > 0))
+            assert lesion.ndim == 3
+
+            spacing = seg.header.get_zooms()[:3]
+            lesion = F.interpolate(
+                lesion[None, None].float(), scale_factor=spacing, mode="nearest"
+            )[0, 0]
+            lesion, _ = fit_to_shape(lesion, np.asarray(seg.affine), self.img_size)
+        else:
+            assert embedding.volume_center is not None
+            lesion = self.support_volume_transform.lesion(
+                seg, embedding.volume_scale, embedding.volume_center
+            )
+
+        gx, gy, gz = self.grid_size
+        px, py, pz = self.patch_size
+        lesion_patches = lesion.bool().reshape(gx, px, gy, py, gz, pz)
+        lesion_patches = lesion_patches.any(dim=(1, 3, 5)).numpy().reshape(-1)
+        inside = lesion_patches[embedding.patch_ids]
+        assert inside.any() and (~inside).any()
+
+        lesion_tokens = embedding.tokens[inside]
+        outside_tokens = embedding.tokens[~inside]
+        contrast_scale = np.sqrt((lesion_tokens.var(0) + outside_tokens.var(0)) / 2)
+        return (lesion_tokens.mean(0) - outside_tokens.mean(0)) / contrast_scale.clip(1e-6)
+
+    def select_sweet_channels(self, contrasts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        assert self.cfg.sweet_k <= contrasts.shape[1]
+        mean_contrast = contrasts.mean(0)
+        consistency = np.abs(mean_contrast) / contrasts.std(0, ddof=1).clip(1e-6)
+        channels = np.argsort(consistency)[-self.cfg.sweet_k :][::-1]
+        signs = np.sign(mean_contrast[channels])
+        signs[signs == 0] = 1
+        return channels, signs
+
+    def top_k_pool(self, embedding: Embedding) -> np.ndarray:
+        assert len(embedding.tokens) >= self.cfg.top_k
+        signed_channels = embedding.tokens[:, self.channels] * self.signs
+        top_tokens = np.partition(signed_channels, -self.cfg.top_k, axis=0)[-self.cfg.top_k :]
+        return top_tokens.mean(0)
+
+    def features(self, images: Images) -> np.ndarray:
+        """(D,) per subject. A pure function of the images, so training and inference agree."""
+        embeddings = self.embeddings(images)
+        if self.cfg.pooling is Pooling.local:
+            return self.top_k_pool(embeddings[0])
+
+        return np.concatenate([embedding.pooled for embedding in embeddings])
 
     def cached_features(self, row: dict) -> np.ndarray:
         if row["subject"] not in self.cache:
             self.cache[row["subject"]] = self.features(row)
         return self.cache[row["subject"]]
 
+    def cached_embedding(self, row: dict) -> Embedding:
+        if row["subject"] not in self.embedding_cache:
+            self.embedding_cache[row["subject"]] = self.embeddings(row)[0]
+        return self.embedding_cache[row["subject"]]
+
     def fit(self, rows: list[dict]) -> None:
-        X = np.stack([self.cached_features(row) for row in rows])
         y = np.array([row["label"] for row in rows])
 
-        clf = LogisticRegressionCV(
-            Cs=10,
-            class_weight="balanced",
-            scoring="roc_auc",
-            max_iter=1000,
-            l1_ratios=(0,),
-            use_legacy_attributes=False,
-        )
-        self.head = make_pipeline(StandardScaler(), clf)
-        self.head.fit(X, y)
+        if self.cfg.pooling is Pooling.mean:
+            X = np.stack([self.cached_features(row) for row in rows])
+        else:
+            embeddings = [self.cached_embedding(row) for row in rows]
+            lesion_contrasts = [
+                self.lesion_channel_contrast(embedding, row["seg"])
+                for row, embedding in zip(rows, embeddings)
+                if row["label"] == 1
+            ]
+            self.channels, self.signs = self.select_sweet_channels(np.stack(lesion_contrasts))
+            local_X = np.stack([self.top_k_pool(embedding) for embedding in embeddings])
+            X = local_X
+            if self.cfg.pooling is Pooling.ensemble:
+                X = np.stack([embedding.pooled for embedding in embeddings])
+                self.local_head = fit_head(local_X, y)
+
+        self.head = fit_head(X, y)
         self.positive = list(self.head.classes_).index(1)
+        if self.cfg.pooling is Pooling.ensemble:
+            logits = np.stack(
+                [self.head.decision_function(X), self.local_head.decision_function(local_X)]
+            )
+            self.logit_mean = logits.mean(1)
+            self.logit_std = logits.std(1).clip(1e-6)
 
     def predict(self, images: Images) -> float:
         """Positive-class probability. Indexes `classes_` rather than assuming column 1, which
         would silently score the wrong class if the label order differed."""
+        if self.cfg.pooling is Pooling.ensemble:
+            embedding = self.embeddings(images)[0]
+            mean_X = embedding.pooled[None]
+            local_X = self.top_k_pool(embedding)[None]
+            logits = np.array(
+                [
+                    self.head.decision_function(mean_X)[0],
+                    self.local_head.decision_function(local_X)[0],
+                ]
+            )
+            return float(expit(((logits - self.logit_mean) / self.logit_std).mean()))
+
         X = self.features(images)[None]
         probs = self.head.predict_proba(X)[0]
         return float(probs[self.positive])
@@ -126,7 +266,14 @@ class Task1Method:
         points -- a few hundred KB, so a run saves one without copying a 3.7G checkpoint."""
         model_dir.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(self.cfg, model_dir / "config.yaml")
-        joblib.dump({"head": self.head, "positive": self.positive}, model_dir / "head.joblib")
+        state = {"head": self.head, "positive": self.positive}
+        if self.cfg.pooling is not Pooling.mean:
+            state |= {"channels": self.channels, "signs": self.signs}
+        if self.cfg.pooling is Pooling.ensemble:
+            state["local_head"] = self.local_head
+            state["logit_mean"] = self.logit_mean
+            state["logit_std"] = self.logit_std
+        joblib.dump(state, model_dir / "head.joblib")
 
     @classmethod
     def load(cls, model_dir: Path, **overrides) -> "Task1Method":
@@ -138,6 +285,12 @@ class Task1Method:
         method = cls(cfg)
         state = joblib.load(model_dir / "head.joblib")
         method.head, method.positive = state["head"], state["positive"]
+        if cfg.pooling is not Pooling.mean:
+            method.channels, method.signs = state["channels"], state["signs"]
+        if cfg.pooling is Pooling.ensemble:
+            method.local_head = state["local_head"]
+            method.logit_mean = state["logit_mean"]
+            method.logit_std = state["logit_std"]
         return method
 
 
