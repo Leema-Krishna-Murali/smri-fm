@@ -21,12 +21,13 @@ import nibabel as nib
 import numpy as np
 import torch
 from omegaconf import OmegaConf
-from sklearn.linear_model import RidgeCV
+from sklearn.linear_model import Ridge, RidgeCV
 from sklearn.model_selection import KFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from fomo_tune.backbone import load_backbone
+from fomo_tune.task3_augmentation import K2_WEIGHTS, k2_views
 from fomo_tune.utils import git_sha, set_seed, setup_logging
 
 logger = logging.getLogger("fomo_tune")
@@ -43,6 +44,7 @@ class Config:
     evals: tuple[str, ...] = ()
     device: str = "cuda"
     seed: int = 4466
+    tta: bool = True
 
 
 # ---- method: the part we tune -----------------------------------------------------------
@@ -58,20 +60,28 @@ class Task3Method:
         self.backbone.to(self.device).eval().requires_grad_(False)
         self.cache: dict[str, np.ndarray] = {}
         self.head = None
+        self._block_embed = None
+
+        encoder = self.backbone.encoder
+
+        def capture(module, args, output):
+            del module, args
+            tokens = encoder.norm(output)[encoder.num_prefix_tokens :]
+            self._block_embed = tokens.mean(dim=0)
+
+        encoder.blocks[15].register_forward_hook(capture)
 
     @torch.inference_mode()
     def features(self, images: Images) -> np.ndarray:
         """(D,) per subject. A pure function of the images, so training and inference agree."""
         sample = self.transform(images["t1w"])
         batch = {key: value[None].to(self.device) for key, value in sample.items()}
+        self._block_embed = None
 
         with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
-            out = self.backbone(batch)
+            self.backbone(batch)
 
-        patch_embeds = out["patch_embeds"]
-        token_mask = out["token_mask"].bool().unsqueeze(-1)
-        embed = (patch_embeds * token_mask).sum(dim=1) / token_mask.sum(dim=1)
-        return embed[0].float().cpu().numpy()
+        return self._block_embed.float().cpu().numpy()
 
     def cached_features(self, row: dict) -> np.ndarray:
         if row["subject"] not in self.cache:
@@ -79,18 +89,37 @@ class Task3Method:
         return self.cache[row["subject"]]
 
     def fit(self, rows: list[dict]) -> None:
-        X = np.stack([self.cached_features(row) for row in rows])
-        y = np.array([row["age"] for row in rows], dtype=float)
-
-        # RidgeCV picks alpha by its own efficient leave-one-out, so the fold's own split is
-        # never touched by model selection
-        self.head = make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(-3, 6, 19)))
-        self.head.fit(X, y)
+        features, ages, weights, clean = [], [], [], []
+        for row in rows:
+            for view in k2_views(row, self.cfg.seed):
+                features.append(self.cached_features(view))
+                ages.append(view["age"])
+                weights.append(view["fit_weight"])
+                clean.append(view["variant"] == "clean")
+        X = np.stack(features)
+        y = np.array(ages, dtype=float)
+        sample_weight = np.array(weights, dtype=float)
+        clean = np.array(clean, dtype=bool)
+        selector = make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(-3, 6, 19)))
+        selector.fit(X[clean], y[clean])
+        self.head = make_pipeline(StandardScaler(), Ridge(alpha=float(selector[-1].alpha_)))
+        self.head.fit(
+            X,
+            y,
+            standardscaler__sample_weight=sample_weight,
+            ridge__sample_weight=sample_weight,
+        )
 
     def predict(self, images: Images) -> float:
         """Age in years."""
-        X = self.features(images)[None]
-        return float(self.head.predict(X)[0])
+        if not self.cfg.tta:
+            return float(self.head.predict(self.features(images)[None])[0])
+        row = {"subject": "t1", "age": 0.0, "t1w": images["t1w"]}
+        preds = [
+            float(self.head.predict(self.features(view)[None])[0])
+            for view in k2_views(row, self.cfg.seed)
+        ]
+        return float(np.array(preds) @ K2_WEIGHTS)
 
     def save(self, model_dir: Path) -> None:
         """Everything `load` needs but the backbone weights, which stay wherever `ckpt_path`
