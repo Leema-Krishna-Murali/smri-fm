@@ -43,14 +43,14 @@ AP_EXTENT_MM = 133.0
 @dataclass
 class Config:
     task: str = "task5"
-    ckpt_path: str = "hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth"
+    ckpt_path: str = "hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth"
     output_root: str = "output/fomo_tune"
     name: str = "task5"
     device: str = "cuda"
     seed: int = 4466
     masking: str = "zero"
-    crop_ap: bool = False
-    crop_test_ap: bool = False
+    crop_ap: bool = True
+    crop_test_ap: bool = True
 
 
 def crop_ap(img: nib.Nifti1Image, extent_mm: float) -> nib.Nifti1Image:
