@@ -1,0 +1,69 @@
+=== geometry of the pooled embedding, 48 subjects x 1024
+
+ptfull  crop=False cosine 0.9897  ‖x‖ 14.3  PC1 0.42  PC1-3 0.70  participation 4.3
+ptfull  crop=True  cosine 0.9896  ‖x‖ 14.3  PC1 0.42  PC1-3 0.70  participation 4.3
+walnut  crop=False cosine 0.9803  ‖x‖ 6.2  PC1 0.32  PC1-3 0.62  participation 6.1
+walnut  crop=True  cosine 0.9802  ‖x‖ 6.2  PC1 0.31  PC1-3 0.62  participation 6.1
+
+
+=== what each principal component tracks (spearman; AUROC for the label)
+
+ptfull crop=False
+  PC      var  label AUROC              edge         ventricle   brain (cropped)             skyra
+  1      0.42      0.623 v             +0.15             +0.06             +0.17             -0.55
+  2      0.20      0.561               -0.05             -0.24             -0.79             -0.23
+  3      0.08      0.507               +0.11             +0.32             +0.40             -0.72
+  4      0.07      0.917 v             +0.66             -0.51             +0.39             -0.03
+  5      0.04      0.644               -0.17             +0.04             -0.10             -0.12
+  6      0.03      0.507               +0.13             -0.07             +0.09             -0.21
+
+ptfull crop=True
+  PC      var  label AUROC              edge         ventricle   brain (cropped)             skyra
+  1      0.42      0.622 v             +0.15             +0.07             +0.17             -0.56
+  2      0.20      0.549               -0.03             -0.25             -0.77             -0.24
+  3      0.08      0.569 v             +0.23             +0.24             +0.46             -0.70
+  4      0.07      0.927 v             +0.66             -0.53             +0.38             +0.09
+  5      0.04      0.616               -0.20             -0.03             -0.06             +0.06
+  6      0.03      0.545               +0.05             -0.13             +0.05             -0.17
+
+walnut crop=False
+  PC      var  label AUROC              edge         ventricle   brain (cropped)             skyra
+  1      0.32      0.634 v             +0.18             +0.04             +0.14             -0.62
+  2      0.18      0.634               -0.13             -0.11             -0.70             -0.39
+  3      0.12      0.568 v             -0.01             -0.48             -0.55             +0.60
+  4      0.09      0.840               -0.58             +0.42             -0.35             +0.17
+  5      0.05      0.635 v             +0.13             +0.10             +0.12             +0.15
+  6      0.04      0.502 v             -0.05             -0.16             -0.08             +0.20
+
+walnut crop=True
+  PC      var  label AUROC              edge         ventricle   brain (cropped)             skyra
+  1      0.31      0.627 v             +0.17             +0.05             +0.12             -0.62
+  2      0.19      0.599               -0.08             -0.17             -0.73             -0.32
+  3      0.13      0.575               -0.00             +0.47             +0.48             -0.61
+  4      0.09      0.840               -0.58             +0.36             -0.40             +0.16
+  5      0.05      0.649 v             +0.18             +0.15             +0.11             +0.19
+  6      0.04      0.523 v             -0.03             -0.24             -0.10             +0.23
+
+
+=== how much the crop moves a subject
+
+ptfull  cosine(subject uncropped, same subject cropped) 0.9996 [0.9980, 1.0000]   vs cosine between different subjects 0.9897
+walnut  cosine(subject uncropped, same subject cropped) 0.9991 [0.9965, 1.0000]   vs cosine between different subjects 0.9803
+
+
+=== how much the two checkpoints share, principal subspaces of dimension 10
+
+crop=False  canonical correlations 1.00 1.00 1.00 1.00 0.99 0.99 0.96 0.93 0.90 0.13
+crop=True   canonical correlations 1.00 1.00 1.00 1.00 0.99 0.99 0.95 0.93 0.83 0.72
+
+
+=== do the two see the same thing? spearman between their PC scores over subjects
+    (the 1024 channels are not comparable across models, the 48 subjects are)
+
+  crop=True   walnut PC1   walnut PC2   walnut PC3   walnut PC4   walnut PC5   walnut PC6
+  ptfull PC1        +0.98        -0.13        -0.00        +0.06        -0.09        -0.14
+  ptfull PC2        +0.07        +0.96        -0.16        +0.01        -0.05        +0.05
+  ptfull PC3        +0.13        +0.18        +0.88        -0.44        +0.11        -0.08
+  ptfull PC4        +0.04        -0.24        -0.25        -0.87        +0.12        +0.15
+  ptfull PC5        -0.13        +0.04        +0.07        -0.08        -0.37        +0.72
+  ptfull PC6        -0.03        -0.00        -0.10        -0.09        -0.81        -0.52

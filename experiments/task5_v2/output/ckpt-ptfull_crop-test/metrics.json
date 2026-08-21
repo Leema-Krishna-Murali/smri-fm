@@ -1,0 +1,1 @@
+{"name": "ckpt-ptfull_crop-test", "auroc": 0.9045138888888888, "auroc_ci_low": 0.7989508177008178, "auroc_ci_high": 0.986086956521739, "run_time": 83.0}

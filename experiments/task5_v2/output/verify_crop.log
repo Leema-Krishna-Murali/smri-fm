@@ -1,0 +1,22 @@
+
+--- extent uncropped ----------------------------------------
+scalar               AUROC   perm p   control mean / case mean
+brain_at_ap_edge     0.009   0.0000   0.2141 / 0.01697
+ap_margin_mm         0.854   0.0000   0 / 11.9
+fov_ap_mm            0.924   0.0000   151.2 / 198.7
+n_slices             0.842   0.0000   142.2 / 187.6
+brain_centre_ap      0.316   0.0239   119.3 / 117.9
+brain_ml             0.398   0.2291   1642 / 1581
+coverage (LOO head)   0.976
+anatomy (LOO head)   0.340
+
+--- extent 133.0 ----------------------------------------
+scalar               AUROC   perm p   control mean / case mean
+brain_at_ap_edge     0.418   0.3355   0.428 / 0.4006
+ap_margin_mm             -        -   constant at 0
+fov_ap_mm            0.530   0.6602   133 / 133.1
+n_slices             0.518   0.7813   124.1 / 128.3
+brain_centre_ap      0.479   0.7555   119.1 / 119.1
+brain_ml             0.325   0.0344   1555 / 1456
+coverage (LOO head)   0.450
+anatomy (LOO head)   0.599
