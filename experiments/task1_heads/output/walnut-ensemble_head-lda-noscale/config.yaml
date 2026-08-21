@@ -1,0 +1,18 @@
+task: task1
+ckpt_path: hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth
+modalities:
+- dwi_b1000
+output_root: experiments/task1_heads/output
+name: walnut-ensemble_head-lda-noscale
+device: cuda
+seed: 4466
+pooling: ensemble
+sweet_k: 8
+top_k: 32
+masking: zero
+normalize_volume: true
+normalize_test_volume: true
+head: lda
+head_scoring: roc_auc
+head_C: 1.0
+scaler: false
