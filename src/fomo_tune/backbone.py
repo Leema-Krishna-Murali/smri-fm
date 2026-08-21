@@ -1,4 +1,5 @@
 import inspect
+from typing import Literal
 
 import nibabel as nib
 import numpy as np
@@ -55,11 +56,14 @@ class SmriMaeTransform:
         self,
         img_size: tuple[int, int, int] = (208, 240, 208),
         spacing: tuple[float, float, float] = (1.0, 1.0, 1.0),
+        masking: Literal["mean", "zero"] = "mean",
     ):
+        assert masking in ("mean", "zero")
         self.img_size = img_size
         self.spacing = spacing
+        self.masking = masking
 
-    def __call__(self, img: nib.Nifti1Image) -> dict[str, Tensor]:
+    def resize(self, img: nib.Nifti1Image, mode: str = "trilinear") -> tuple[Tensor, np.ndarray]:
         # repack image to handle incomplete hf Nifti interface
         img = nib.Nifti1Image(img.dataobj, img.affine, img.header)
         # a converter's trailing singleton axis is common and would otherwise reach `fit_to_shape`
@@ -72,12 +76,16 @@ class SmriMaeTransform:
 
         spacing = img.header.get_zooms()
         if max(abs(s - s_) for s, s_ in zip(spacing, self.spacing)) > 0.05:
-            data, affine = rescale(data, affine, spacing, self.spacing)
+            data, affine = rescale(data, affine, spacing, self.spacing, mode=mode)
 
         data, affine = fit_to_shape(data, affine, target_shape=self.img_size)
+        return data, affine
 
-        # mean threshold, not the SynthSeg mask used in pretraining, so skull and neck stay in
-        mask = data > data.mean()
+    def __call__(self, img: nib.Nifti1Image) -> dict[str, Tensor]:
+        data, affine = self.resize(img)
+
+        # not the SynthSeg mask used in pretraining, so skull and neck stay in
+        mask = data > 0 if self.masking == "zero" else data > data.mean()
         brain = data[mask]
         mean = brain.mean()
         # population std (correction=0) to match the pretraining normalization
@@ -96,9 +104,10 @@ def rescale(
     affine: np.ndarray,
     spacing: tuple[float, ...],
     target_spacing: tuple[float, ...] = (1.0, 1.0, 1.0),
+    mode: str = "trilinear",
 ) -> tuple[torch.Tensor, np.ndarray]:
     scales = tuple([current / target for current, target in zip(spacing, target_spacing)])
-    resampled = F.interpolate(x[None, None], scale_factor=scales, mode="trilinear").squeeze(0, 1)
+    resampled = F.interpolate(x[None, None], scale_factor=scales, mode=mode).squeeze(0, 1)
 
     # align_corners=False reads output voxel j from input voxel (j + 0.5) / scale - 0.5
     scale = np.asarray(scales, dtype=float)
