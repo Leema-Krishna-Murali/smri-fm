@@ -1,0 +1,33 @@
+22:27:35 run ckpt-walnut_crop-test (git 099868e)
+22:27:35 config:
+task: task5
+ckpt_path: hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth
+output_root: experiments/task5_v2/output
+name: ckpt-walnut_crop-test
+device: cuda
+seed: 4466
+masking: zero
+crop_ap: false
+crop_test_ap: true
+22:27:49 dataset: 48 subjects, 24 positive
+22:28:33 fold 1/20 n=3 y=[0 1 1] p=[0.646 0.532 0.783] (39s)
+22:28:36 fold 2/20 n=3 y=[1 1 1] p=[0.444 0.889 0.267] (42s)
+22:28:39 fold 3/20 n=3 y=[0 1 1] p=[0.377 0.581 0.58 ] (45s)
+22:28:42 fold 4/20 n=3 y=[0 0 1] p=[0.043 0.001 0.998] (48s)
+22:28:44 fold 5/20 n=3 y=[1 1 1] p=[0.522 0.502 0.471] (50s)
+22:28:46 fold 6/20 n=3 y=[0 0 1] p=[0.157 0.401 0.249] (52s)
+22:28:48 fold 7/20 n=3 y=[0 0 1] p=[0.219 0.205 0.788] (54s)
+22:28:52 fold 8/20 n=3 y=[0 0 1] p=[0.01  0.001 0.412] (58s)
+22:28:53 fold 9/20 n=2 y=[0 1] p=[0.192 0.367] (59s)
+22:28:54 fold 10/20 n=2 y=[0 1] p=[0.    0.003] (60s)
+22:28:56 fold 11/20 n=2 y=[0 0] p=[0.455 0.414] (62s)
+22:28:58 fold 12/20 n=2 y=[0 1] p=[0.005 0.515] (64s)
+22:29:00 fold 13/20 n=2 y=[0 1] p=[0.505 0.506] (66s)
+22:29:02 fold 14/20 n=2 y=[0 1] p=[0.066 0.926] (68s)
+22:29:04 fold 15/20 n=2 y=[0 1] p=[0.003 0.96 ] (71s)
+22:29:06 fold 16/20 n=2 y=[0 1] p=[0.006 0.719] (72s)
+22:29:08 fold 17/20 n=2 y=[0 0] p=[0.197 0.213] (75s)
+22:29:12 fold 18/20 n=2 y=[0 1] p=[0.001 0.997] (78s)
+22:29:14 fold 19/20 n=2 y=[0 1] p=[0.462 0.53 ] (80s)
+22:29:16 fold 20/20 n=2 y=[0 1] p=[0.457 0.535] (82s)
+22:29:19 result: auroc=0.8837  auroc_ci_low=0.7727  auroc_ci_high=0.9687  (82s)

@@ -23,9 +23,19 @@ From: python:3.11-slim
         jaxtyping==0.3.10 \
         timm==1.0.27 \
         huggingface-hub==0.36.2 \
-        scikit-learn==1.9.0 \
+        scikit-learn==1.8.0 \
         joblib==1.5.3 \
-        omegaconf==2.3.0
+        omegaconf==2.3.0 \
+        h5py==3.16.0 \
+        platformdirs==4.10.0
+
+    # pinned to the third_party/SynthSeg submodule; --no-deps keeps the reference
+    # implementation's matplotlib out, and a tarball needs no git in the image
+    pip install --no-cache-dir --no-deps \
+        "SynthSeg @ https://github.com/MedARC-AI/SynthSeg/archive/2690d9ac9ae28323d03043406cd21db0a8741547.tar.gz"
+
+%environment
+    export SYNTHSEG_WEIGHTS=/app/model/synthseg.h5
 
 %runscript
     exec python /app/predict.py "$@"

@@ -24,6 +24,7 @@ OUT_DIR="${EXP_DIR}/output"
 
 runs=(
     "task1 main_task1"
+    "task5 main_task5"
 )
 
 for run in "${runs[@]}"; do

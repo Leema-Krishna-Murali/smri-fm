@@ -1,0 +1,33 @@
+22:25:33 run ckpt-ptfull_crop-none (git 099868e)
+22:25:33 config:
+task: task5
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+output_root: experiments/task5_v2/output
+name: ckpt-ptfull_crop-none
+device: cuda
+seed: 4466
+masking: zero
+crop_ap: false
+crop_test_ap: false
+22:25:47 dataset: 48 subjects, 24 positive
+22:26:34 fold 1/20 n=3 y=[0 1 1] p=[0.667 0.733 0.911] (41s)
+22:26:38 fold 2/20 n=3 y=[1 1 1] p=[0.643 0.963 0.486] (44s)
+22:26:41 fold 3/20 n=3 y=[0 1 1] p=[0.268 0.844 0.771] (47s)
+22:26:44 fold 4/20 n=3 y=[0 0 1] p=[0.241 0.037 0.981] (50s)
+22:26:45 fold 5/20 n=3 y=[1 1 1] p=[0.784 0.622 0.382] (52s)
+22:26:47 fold 6/20 n=3 y=[0 0 1] p=[0.058 0.402 0.513] (54s)
+22:26:50 fold 7/20 n=3 y=[0 0 1] p=[0.382 0.269 0.871] (56s)
+22:26:55 fold 8/20 n=3 y=[0 0 1] p=[0.069 0.054 0.956] (61s)
+22:26:56 fold 9/20 n=2 y=[0 1] p=[0.019 0.461] (63s)
+22:26:59 fold 10/20 n=2 y=[0 1] p=[0.188 0.561] (65s)
+22:27:00 fold 11/20 n=2 y=[0 0] p=[0.17  0.116] (67s)
+22:27:03 fold 12/20 n=2 y=[0 1] p=[0.144 0.943] (69s)
+22:27:06 fold 13/20 n=2 y=[0 1] p=[0.494 0.697] (73s)
+22:27:08 fold 14/20 n=2 y=[0 1] p=[0.17 0.91] (75s)
+22:27:11 fold 15/20 n=2 y=[0 1] p=[0.052 0.965] (78s)
+22:27:13 fold 16/20 n=2 y=[0 1] p=[0.105 0.828] (80s)
+22:27:16 fold 17/20 n=2 y=[0 0] p=[0.061 0.134] (82s)
+22:27:17 fold 18/20 n=2 y=[0 1] p=[0.24  0.927] (83s)
+22:27:18 fold 19/20 n=2 y=[0 1] p=[0.005 0.971] (85s)
+22:27:21 fold 20/20 n=2 y=[0 1] p=[0.188 0.931] (87s)
+22:27:22 result: auroc=0.9809  auroc_ci_low=0.9410  auroc_ci_high=1.0000  (87s)
