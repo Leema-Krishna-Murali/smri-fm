@@ -23,7 +23,7 @@ From: python:3.11-slim
         jaxtyping==0.3.10 \
         timm==1.0.27 \
         huggingface-hub==0.36.2 \
-        scikit-learn==1.9.0 \
+        scikit-learn==1.8.0 \
         joblib==1.5.3 \
         omegaconf==2.3.0 \
         h5py==3.16.0 \
