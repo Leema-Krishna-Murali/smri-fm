@@ -16,7 +16,7 @@ set +a
 EXP_DIR="experiments/fomo_tune_v2"
 OUT_DIR="${EXP_DIR}/output"
 
-runs=(task1)
+runs=(task1 task5)
 
 for name in "${runs[@]}"; do
     # build.py names the sif after `task` in the run's saved config, which is the run name here

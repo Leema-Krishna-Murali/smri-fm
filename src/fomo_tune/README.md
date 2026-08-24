@@ -123,6 +123,7 @@ Oracle is the per-subject best threshold — the ceiling any thresholding rule c
 |---|---|---|---|---|---|
 | baseline | 0.984 | 0.953 – 1.000 | 68s | `1df2e5d`† | t1w, `LogisticRegressionCV` |
 | walnut-v0.1 | 0.995 | 0.979 – 1.000 | 69s | `ead1264` | vitl/sub-52k checkpoint, baseline otherwise |
+| synthseg + AP crop | 0.882 | 0.774 – 0.972 | 127s | `c9c8f6a` | vitl/sub-52k, stripped and cropped to a common 133mm AP slab — the current default |
 
 Shas marked † predate this branch split.
 
