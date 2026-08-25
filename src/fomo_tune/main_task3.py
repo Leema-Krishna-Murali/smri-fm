@@ -4,12 +4,17 @@
 fixed so scores stay comparable across iterations: 20-fold over the 494 subjects, pool the
 out-of-fold predictions, bootstrap subjects for the CI.
 
+The method fits on K2 augmented views of every subject and averages the same views at test time.
+Views are deterministic in the subject and seed, so `precompute` embeds each one exactly once and
+the folds only ever read the cache. Set `train_aug=false test_aug=false` for the plain baseline.
+
 `train` runs that protocol then fits and saves a head; `predict` is the challenge contract, one t1
 path in and one age out. Both go through `Task3Method.predict`, so every fold exercises the path
 the submission will run.
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import time
@@ -25,14 +30,19 @@ from sklearn.linear_model import Ridge, RidgeCV
 from sklearn.model_selection import KFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+from torch.utils.data import DataLoader, Dataset
 
+from fomo_tune import task3_augmentation
 from fomo_tune.backbone import load_backbone
-from fomo_tune.task3_augmentation import K2_WEIGHTS, k2_views
+from fomo_tune.task3_augmentation import K2_DRAWS, augment_draw, k2_views
 from fomo_tune.utils import git_sha, set_seed, setup_logging
 
 logger = logging.getLogger("fomo_tune")
 
 Images = dict[str, nib.Nifti1Image]
+
+# seeds the test-time views when the caller has no subject to key on, as in the container
+TTA_SUBJECT = "t1"
 
 
 @dataclass
@@ -42,16 +52,64 @@ class Config:
     output_root: str = "output/fomo_tune"
     name: str = "task3"
     evals: tuple[str, ...] = ()
+    depth: int | None = 16
+    train_aug: bool = True
+    test_aug: bool = True
+    workers: int = 8
+    feature_cache: str | None = "cache/features"
     device: str = "cuda"
     seed: int = 4466
-    tta: bool = True
 
 
 # ---- method: the part we tune -----------------------------------------------------------
 
 
+class ViewDataset(Dataset):
+    """One item is one subject's views for one draw, already through the backbone transform.
+
+    Splitting on the draw rather than the subject halves the volumes in flight per worker.
+    """
+
+    def __init__(self, rows: list[dict], transform, seed: int, augment: bool):
+        self.rows = rows
+        self.transform = transform
+        self.seed = seed
+        draws = K2_DRAWS if augment else (None,)
+        self.specs = [(index, draw) for index in range(len(rows)) for draw in draws]
+
+    def __len__(self) -> int:
+        return len(self.specs)
+
+    def __getitem__(self, index: int) -> list[tuple[str, dict, dict]]:
+        row_index, draw = self.specs[index]
+        row = self.rows[row_index]
+
+        if draw is None:
+            views = [{**row, "variant": "clean", "fit_weight": 1.0}]
+        else:
+            views = [
+                view
+                for view in augment_draw(row, self.seed, draw)
+                if draw == K2_DRAWS[0] or view["variant"] != "clean"
+            ]
+
+        return [
+            (
+                row["subject"],
+                {
+                    "key": view["subject"],
+                    "variant": view["variant"],
+                    "age": float(view["age"]),
+                    "fit_weight": float(view["fit_weight"]),
+                },
+                self.transform(view["t1w"]),
+            )
+            for view in views
+        ]
+
+
 class Task3Method:
-    """Frozen sMRI MAE, mean-pooled tokens over the t1w, ridge head."""
+    """Frozen sMRI MAE, mean-pooled tokens over the t1w, ridge head over K2 augmented views."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -59,67 +117,153 @@ class Task3Method:
         self.device = torch.device(cfg.device)
         self.backbone.to(self.device).eval().requires_grad_(False)
         self.cache: dict[str, np.ndarray] = {}
+        self.views: dict[str, list[dict]] = {}
         self.head = None
-        self._block_embed = None
-
-        encoder = self.backbone.encoder
-
-        def capture(module, args, output):
-            del module, args
-            tokens = encoder.norm(output)[encoder.num_prefix_tokens :]
-            self._block_embed = tokens.mean(dim=0)
-
-        encoder.blocks[15].register_forward_hook(capture)
 
     @torch.inference_mode()
+    def embed(self, sample: dict[str, torch.Tensor]) -> np.ndarray:
+        """(D,) from one prepared sample, mean-pooled over its post-norm tokens `depth` blocks in."""
+        batch = {key: value[None].to(self.device) for key, value in sample.items()}
+
+        encoder = self.backbone.encoder
+        captured = []
+        handle = None
+        if self.cfg.depth is not None:
+            handle = encoder.blocks[self.cfg.depth].register_forward_pre_hook(
+                lambda module, args: captured.append(args[0])
+            )
+        try:
+            with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
+                out = self.backbone(batch)
+        finally:
+            if handle is not None:
+                handle.remove()
+
+        # batch size 1 leaves no padded token slots, which the depth hook's flat slice relies on
+        assert out["token_mask"].all(), "the token sequence is padded"
+        if self.cfg.depth is None:
+            tokens = out["patch_embeds"][0]
+        else:
+            tokens = encoder.norm(captured[0])[encoder.num_prefix_tokens :]
+        return tokens.mean(dim=0).float().cpu().numpy()
+
     def features(self, images: Images) -> np.ndarray:
         """(D,) per subject. A pure function of the images, so training and inference agree."""
-        sample = self.transform(images["t1w"])
-        batch = {key: value[None].to(self.device) for key, value in sample.items()}
-        self._block_embed = None
+        return self.embed(self.transform(images["t1w"]))
 
-        with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
-            self.backbone(batch)
+    def cache_path(self, tag: str) -> Path | None:
+        """Where `tag`'s embedded views live. The augmentation source is in the fingerprint, so
+        editing it invalidates the cache rather than silently reusing the old views."""
+        if not self.cfg.feature_cache:
+            return None
+        fingerprint = "|".join(
+            [
+                self.cfg.ckpt_path,
+                str(self.cfg.depth),
+                str(self.cfg.seed),
+                str(self.cfg.train_aug or self.cfg.test_aug),
+                Path(task3_augmentation.__file__).read_text(),
+            ]
+        )
+        digest = hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
+        return Path(self.cfg.feature_cache) / f"{self.cfg.task}-{tag}-{digest}.joblib"
 
-        return self._block_embed.float().cpu().numpy()
+    def precompute(self, rows: list[dict], tag: str) -> None:
+        """Embed every view of every row once, so `fit` and `predict` only read the cache."""
+        path = self.cache_path(tag)
+        if path is not None and path.exists():
+            state = joblib.load(path)
+            self.cache.update(state["cache"])
+            self.views.update(state["views"])
+            logger.info(f"{tag}: loaded {len(state['views'])} subjects from {path}")
 
-    def cached_features(self, row: dict) -> np.ndarray:
-        if row["subject"] not in self.cache:
-            self.cache[row["subject"]] = self.features(row)
-        return self.cache[row["subject"]]
+        pending = [row for row in rows if row["subject"] not in self.views]
+        if not pending:
+            return
+
+        dataset = ViewDataset(
+            pending, self.transform, self.cfg.seed, self.cfg.train_aug or self.cfg.test_aug
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=None,
+            num_workers=self.cfg.workers,
+            prefetch_factor=2 if self.cfg.workers else None,
+        )
+
+        start = time.perf_counter()
+        for index, items in enumerate(loader):
+            for subject, record, sample in items:
+                self.cache[record["key"]] = self.embed(sample)
+                self.views.setdefault(subject, []).append(record)
+            if (index + 1) % 20 == 0:
+                logger.info(
+                    f"{tag}: embedded {index + 1}/{len(dataset)} draws "
+                    f"({time.perf_counter() - start:.0f}s)"
+                )
+        logger.info(
+            f"{tag}: {len(pending)} subjects, {sum(len(self.views[r['subject']]) for r in pending)} "
+            f"views ({time.perf_counter() - start:.0f}s)"
+        )
+
+        if path is not None:
+            views = {row["subject"]: self.views[row["subject"]] for row in rows}
+            cache = {
+                record["key"]: self.cache[record["key"]]
+                for records in views.values()
+                for record in records
+            }
+            path.parent.mkdir(parents=True, exist_ok=True)
+            joblib.dump({"cache": cache, "views": views}, path)
 
     def fit(self, rows: list[dict]) -> None:
-        features, ages, weights, clean = [], [], [], []
-        for row in rows:
-            for view in k2_views(row, self.cfg.seed):
-                features.append(self.cached_features(view))
-                ages.append(view["age"])
-                weights.append(view["fit_weight"])
-                clean.append(view["variant"] == "clean")
-        X = np.stack(features)
-        y = np.array(ages, dtype=float)
-        sample_weight = np.array(weights, dtype=float)
-        clean = np.array(clean, dtype=bool)
+        records = [
+            record
+            for row in rows
+            for record in self.views[row["subject"]]
+            if self.cfg.train_aug or record["variant"] == "clean"
+        ]
+        X = np.stack([self.cache[record["key"]] for record in records])
+        y = np.array([record["age"] for record in records], dtype=float)
+        weights = np.array([record["fit_weight"] for record in records], dtype=float)
+        clean = np.array([record["variant"] == "clean" for record in records], dtype=bool)
+
+        # one subject's views carry a total weight of one, so alpha means the same in every config
+        weights = weights * len(rows) / weights.sum()
+
+        # RidgeCV picks alpha over the clean views alone, where one row is one subject
         selector = make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(-3, 6, 19)))
         selector.fit(X[clean], y[clean])
         self.head = make_pipeline(StandardScaler(), Ridge(alpha=float(selector[-1].alpha_)))
         self.head.fit(
             X,
             y,
-            standardscaler__sample_weight=sample_weight,
-            ridge__sample_weight=sample_weight,
+            standardscaler__sample_weight=weights,
+            ridge__sample_weight=weights,
         )
 
-    def predict(self, images: Images) -> float:
-        """Age in years."""
-        if not self.cfg.tta:
-            return float(self.head.predict(self.features(images)[None])[0])
-        row = {"subject": "t1", "age": 0.0, "t1w": images["t1w"]}
-        preds = [
-            float(self.head.predict(self.features(view)[None])[0])
-            for view in k2_views(row, self.cfg.seed)
-        ]
-        return float(np.array(preds) @ K2_WEIGHTS)
+    def predict(self, images: Images, key: str | None = None) -> float:
+        """Age in years, a weighted average over the test-time views.
+
+        `key` names a subject `precompute` has already embedded, which is how cross-validation
+        reuses a held-out subject's views. Without one, as in the container, the views are built
+        here and seeded by a fixed pseudo-subject.
+        """
+        if key is not None:
+            records = self.views[key]
+            if not self.cfg.test_aug:
+                records = [record for record in records if record["variant"] == "clean"]
+            X = np.stack([self.cache[record["key"]] for record in records])
+            weights = np.array([record["fit_weight"] for record in records], dtype=float)
+        elif self.cfg.test_aug:
+            row = {"subject": TTA_SUBJECT, "age": 0.0, "t1w": images["t1w"]}
+            views = list(k2_views(row, self.cfg.seed))
+            X = np.stack([self.features(view) for view in views])
+            weights = np.array([view["fit_weight"] for view in views], dtype=float)
+        else:
+            X = self.features(images)[None]
+            weights = np.ones(1)
+        return float(self.head.predict(X) @ weights / weights.sum())
 
     def save(self, model_dir: Path) -> None:
         """Everything `load` needs but the backbone weights, which stay wherever `ckpt_path`
@@ -158,7 +302,8 @@ def cross_validate(
     for fold, (train, test) in enumerate(folds.split(rows)):
         method.fit([rows[i] for i in train])
         for i in test:
-            oof[i] = method.predict({key: rows[i][key] for key in IMAGE_COLS})
+            images = {col: rows[i][col] for col in IMAGE_COLS}
+            oof[i] = method.predict(images, key=rows[i]["subject"])
         logger.info(
             f"fold {fold + 1}/{n_folds} n={len(test)} mae={np.abs(y[test] - oof[test]).mean():.2f} "
             f"({time.perf_counter() - start:.0f}s)"
@@ -170,7 +315,8 @@ def evaluate(rows: list[dict], method: Task3Method) -> tuple[np.ndarray, np.ndar
     """Age for every subject from an already-fitted method, through `predict`."""
     y = np.array([row["age"] for row in rows], dtype=float)
     pred = np.array(
-        [method.predict({key: row[key] for key in IMAGE_COLS}) for row in rows], dtype=float
+        [method.predict({col: row[col] for col in IMAGE_COLS}, key=row["subject"]) for row in rows],
+        dtype=float,
     )
     return y, pred
 
@@ -204,10 +350,11 @@ def score(
 
 def train(args: argparse.Namespace) -> None:
     # imported here, not at the top, so the container needs no dataset stack to run `predict`
+    from fomo_tune import synthseg
     from fomo_tune.datasets import load_camcan, load_fomo_task3
 
     eval_loaders = {
-        "camcan": load_camcan,
+        "camcan": lambda: synthseg.synthseg_strip_dataset(load_camcan(), source="t1w"),
     }
 
     cfg = OmegaConf.merge(OmegaConf.structured(Config), OmegaConf.from_dotlist(args.overrides))
@@ -227,6 +374,8 @@ def train(args: argparse.Namespace) -> None:
     )
 
     method = Task3Method(cfg)
+    method.precompute(rows, cfg.task)
+
     start = time.perf_counter()
     y, oof = cross_validate(rows, method)
     run_time = time.perf_counter() - start
@@ -254,6 +403,7 @@ def train(args: argparse.Namespace) -> None:
             f"{eval_name}: {len(holdout)} subjects, age {holdout_ages.min():.1f}-"
             f"{holdout_ages.max():.1f} mean {holdout_ages.mean():.1f}"
         )
+        method.precompute(holdout, eval_name)
         y_eval, pred_eval = evaluate(holdout, method)
         eval_summary = score(y_eval, pred_eval)
         eval_preds = [
