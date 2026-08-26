@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,12 +71,11 @@ class ViewDataset(Dataset):
     Splitting on the draw rather than the subject halves the volumes in flight per worker.
     """
 
-    def __init__(self, rows: list[dict], transform, seed: int, augment: bool):
+    def __init__(self, rows: list[dict], transform, seed: int):
         self.rows = rows
         self.transform = transform
         self.seed = seed
-        draws = K2_DRAWS if augment else (None,)
-        self.specs = [(index, draw) for index in range(len(rows)) for draw in draws]
+        self.specs = [(index, draw) for index in range(len(rows)) for draw in K2_DRAWS]
 
     def __len__(self) -> int:
         return len(self.specs)
@@ -84,14 +84,11 @@ class ViewDataset(Dataset):
         row_index, draw = self.specs[index]
         row = self.rows[row_index]
 
-        if draw is None:
-            views = [{**row, "variant": "clean", "fit_weight": 1.0}]
-        else:
-            views = [
-                view
-                for view in augment_draw(row, self.seed, draw)
-                if draw == K2_DRAWS[0] or view["variant"] != "clean"
-            ]
+        views = [
+            view
+            for view in augment_draw(row, self.seed, draw)
+            if draw == K2_DRAWS[0] or view["variant"] != "clean"
+        ]
 
         return [
             (
@@ -161,7 +158,6 @@ class Task3Method:
                 self.cfg.ckpt_path,
                 str(self.cfg.depth),
                 str(self.cfg.seed),
-                str(self.cfg.train_aug or self.cfg.test_aug),
                 Path(task3_augmentation.__file__).read_text(),
             ]
         )
@@ -181,9 +177,7 @@ class Task3Method:
         if not pending:
             return
 
-        dataset = ViewDataset(
-            pending, self.transform, self.cfg.seed, self.cfg.train_aug or self.cfg.test_aug
-        )
+        dataset = ViewDataset(pending, self.transform, self.cfg.seed)
         loader = DataLoader(
             dataset,
             batch_size=None,
@@ -214,7 +208,9 @@ class Task3Method:
                 for record in records
             }
             path.parent.mkdir(parents=True, exist_ok=True)
-            joblib.dump({"cache": cache, "views": views}, path)
+            tmp = path.parent / f".tmp-{os.getpid()}-{path.name}"
+            joblib.dump({"cache": cache, "views": views}, tmp)
+            tmp.rename(path)
 
     def fit(self, rows: list[dict]) -> None:
         records = [
