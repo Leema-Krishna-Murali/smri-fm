@@ -33,6 +33,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
 
+import fomo_tune.synthseg as synthseg
 from fomo_tune import task3_augmentation
 from fomo_tune.backbone import load_backbone
 from fomo_tune.task3_augmentation import K2_DRAWS, augment_draw, k2_views
@@ -45,6 +46,12 @@ Images = dict[str, nib.Nifti1Image]
 # seeds the test-time views when the caller has no subject to key on, as in the container
 TTA_SUBJECT = "t1"
 
+AGE_RANGE = (20.0, 80.0)
+AGE_BINS = 6
+
+# searched only when `alpha` is null
+ALPHAS = np.logspace(-3, 6, 19)
+
 
 @dataclass
 class Config:
@@ -54,8 +61,10 @@ class Config:
     name: str = "task3"
     evals: tuple[str, ...] = ()
     depth: int | None = 16
+    alpha: float | None = None
     train_aug: bool = True
     test_aug: bool = True
+    balance_age: bool = False
     workers: int = 8
     feature_cache: str | None = "cache/features"
     device: str = "cuda"
@@ -63,6 +72,19 @@ class Config:
 
 
 # ---- method: the part we tune -----------------------------------------------------------
+
+
+def age_weights(ages: np.ndarray) -> np.ndarray:
+    """One over the density of the training ages."""
+    clipped = np.clip(ages, *AGE_RANGE)
+    edges = np.linspace(*AGE_RANGE, AGE_BINS + 1)
+    counts, _ = np.histogram(clipped, bins=edges)
+    index = np.clip(np.digitize(clipped, edges) - 1, 0, len(counts) - 1)
+    weights = 1.0 / counts[index]
+
+    effective = weights.sum() ** 2 / (weights**2).sum()
+    assert effective > 0.5 * len(ages), f"age weights concentrate: effective n {effective:.0f}"
+    return weights
 
 
 class ViewDataset(Dataset):
@@ -222,15 +244,29 @@ class Task3Method:
         X = np.stack([self.cache[record["key"]] for record in records])
         y = np.array([record["age"] for record in records], dtype=float)
         weights = np.array([record["fit_weight"] for record in records], dtype=float)
-        clean = np.array([record["variant"] == "clean" for record in records], dtype=bool)
+
+        if self.cfg.balance_age:
+            weights = weights * age_weights(y)
 
         # one subject's views carry a total weight of one, so alpha means the same in every config
         weights = weights * len(rows) / weights.sum()
 
-        # RidgeCV picks alpha over the clean views alone, where one row is one subject
-        selector = make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(-3, 6, 19)))
-        selector.fit(X[clean], y[clean])
-        self.head = make_pipeline(StandardScaler(), Ridge(alpha=float(selector[-1].alpha_)))
+        alpha = self.cfg.alpha
+        if alpha is None:
+            # over the clean views alone, where one row is one subject. Rescaled to mean one
+            # because Ridge trades sample_weight against alpha.
+            clean = np.array([record["variant"] == "clean" for record in records], dtype=bool)
+            clean_weights = weights[clean] * clean.sum() / weights[clean].sum()
+            selector = make_pipeline(StandardScaler(), RidgeCV(alphas=ALPHAS))
+            selector.fit(
+                X[clean],
+                y[clean],
+                standardscaler__sample_weight=clean_weights,
+                ridgecv__sample_weight=clean_weights,
+            )
+            alpha = float(selector[-1].alpha_)
+
+        self.head = make_pipeline(StandardScaler(), Ridge(alpha=alpha))
         self.head.fit(
             X,
             y,
@@ -346,7 +382,6 @@ def score(
 
 def train(args: argparse.Namespace) -> None:
     # imported here, not at the top, so the container needs no dataset stack to run `predict`
-    from fomo_tune import synthseg
     from fomo_tune.datasets import load_camcan, load_fomo_task3
 
     eval_loaders = {
@@ -427,7 +462,10 @@ def predict(args: argparse.Namespace) -> None:
         overrides["ckpt_path"] = args.ckpt_path
     method = Task3Method.load(args.model_dir, **overrides)
 
-    age = method.predict({"t1w": nib.load(args.t1)})
+    img = nib.load(args.t1)
+    seg = synthseg.synthseg(img)
+    img = synthseg.applymask(img, seg)
+    age = method.predict({"t1w": img})
 
     args.output.write_text(f"{age:.6f}\n")
 
