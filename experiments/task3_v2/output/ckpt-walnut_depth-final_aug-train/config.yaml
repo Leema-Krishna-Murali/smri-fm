@@ -1,0 +1,13 @@
+task: task3
+ckpt_path: hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth
+output_root: experiments/task3_v2/output
+name: ckpt-walnut_depth-final_aug-train
+evals:
+- camcan
+depth: null
+train_aug: true
+test_aug: false
+workers: 12
+feature_cache: cache/features
+device: cuda
+seed: 4466

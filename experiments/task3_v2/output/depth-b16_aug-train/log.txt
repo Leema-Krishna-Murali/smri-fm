@@ -1,0 +1,41 @@
+10:00:37 run depth-b16_aug-train (git dac249d)
+10:00:37 config:
+task: task3
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+output_root: experiments/task3_v2/output
+name: depth-b16_aug-train
+evals:
+- camcan
+depth: 16
+train_aug: true
+test_aug: false
+workers: 12
+feature_cache: cache/features
+device: cuda
+seed: 4466
+10:01:52 dataset: 494 subjects, age 19-80 mean 45.2
+10:01:56 task3: loaded 494 subjects from cache/features/task3-task3-a51f55e3da23.joblib
+10:01:57 fold 1/20 n=25 mae=3.94 (0s)
+10:01:57 fold 2/20 n=25 mae=4.53 (1s)
+10:01:58 fold 3/20 n=25 mae=3.49 (1s)
+10:01:58 fold 4/20 n=25 mae=3.78 (2s)
+10:01:59 fold 5/20 n=25 mae=4.26 (2s)
+10:01:59 fold 6/20 n=25 mae=3.25 (3s)
+10:01:59 fold 7/20 n=25 mae=3.78 (3s)
+10:02:00 fold 8/20 n=25 mae=3.08 (4s)
+10:02:00 fold 9/20 n=25 mae=3.94 (4s)
+10:02:01 fold 10/20 n=25 mae=3.95 (5s)
+10:02:01 fold 11/20 n=25 mae=3.86 (5s)
+10:02:02 fold 12/20 n=25 mae=3.77 (5s)
+10:02:02 fold 13/20 n=25 mae=4.00 (6s)
+10:02:03 fold 14/20 n=25 mae=3.99 (6s)
+10:02:03 fold 15/20 n=24 mae=4.09 (7s)
+10:02:04 fold 16/20 n=24 mae=4.27 (7s)
+10:02:04 fold 17/20 n=24 mae=4.27 (8s)
+10:02:04 fold 18/20 n=24 mae=4.54 (8s)
+10:02:05 fold 19/20 n=24 mae=3.46 (9s)
+10:02:05 fold 20/20 n=24 mae=3.74 (9s)
+10:02:06 result: pearson_r=0.9596  pearson_r_ci_low=0.9529  pearson_r_ci_high=0.9653  mae=3.8966  mae_ci_low=3.6288  mae_ci_high=4.1722  (9s)
+10:02:57 camcan: 481 subjects, age 18.6-89.0 mean 58.2
+10:02:58 camcan: loaded 481 subjects from cache/features/task3-camcan-a51f55e3da23.joblib
+10:02:58 camcan: pearson_r=0.9401  pearson_r_ci_low=0.9285  pearson_r_ci_high=0.9501  mae=5.4920  mae_ci_low=5.1300  mae_ci_high=5.8805
