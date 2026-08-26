@@ -1,0 +1,43 @@
+20:40:21 run bal_ckpt-walnut_depth-final_aug-test (git d993c1c-dirty)
+20:40:21 config:
+task: task3
+ckpt_path: hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth
+output_root: experiments/task3_v2/output
+name: bal_ckpt-walnut_depth-final_aug-test
+evals:
+- camcan
+depth: null
+alpha: null
+train_aug: false
+test_aug: true
+balance_age: true
+workers: 12
+feature_cache: cache/features
+device: cuda
+seed: 4466
+20:41:27 dataset: 494 subjects, age 19-80 mean 45.2
+20:41:32 task3: loaded 494 subjects from cache/features/task3-task3-d4665bb97818.joblib
+20:41:32 fold 1/20 n=25 mae=3.83 (0s)
+20:41:32 fold 2/20 n=25 mae=4.92 (0s)
+20:41:33 fold 3/20 n=25 mae=4.14 (1s)
+20:41:33 fold 4/20 n=25 mae=4.19 (1s)
+20:41:33 fold 5/20 n=25 mae=4.06 (1s)
+20:41:33 fold 6/20 n=25 mae=4.29 (1s)
+20:41:33 fold 7/20 n=25 mae=5.10 (1s)
+20:41:34 fold 8/20 n=25 mae=3.57 (2s)
+20:41:34 fold 9/20 n=25 mae=5.07 (2s)
+20:41:34 fold 10/20 n=25 mae=4.27 (2s)
+20:41:35 fold 11/20 n=25 mae=4.54 (3s)
+20:41:35 fold 12/20 n=25 mae=4.40 (3s)
+20:41:35 fold 13/20 n=25 mae=3.34 (3s)
+20:41:35 fold 14/20 n=25 mae=5.30 (3s)
+20:41:36 fold 15/20 n=24 mae=5.39 (4s)
+20:41:36 fold 16/20 n=24 mae=5.83 (4s)
+20:41:36 fold 17/20 n=24 mae=3.58 (4s)
+20:41:36 fold 18/20 n=24 mae=3.73 (4s)
+20:41:37 fold 19/20 n=24 mae=4.42 (5s)
+20:41:37 fold 20/20 n=24 mae=4.15 (5s)
+20:41:37 result: pearson_r=0.9572  pearson_r_ci_low=0.9504  pearson_r_ci_high=0.9632  mae=4.4032  mae_ci_low=4.1191  mae_ci_high=4.7055  (5s)
+20:42:29 camcan: 481 subjects, age 18.6-89.0 mean 58.2
+20:42:29 camcan: loaded 481 subjects from cache/features/task3-camcan-d4665bb97818.joblib
+20:42:29 camcan: pearson_r=0.9409  pearson_r_ci_low=0.9299  pearson_r_ci_high=0.9510  mae=6.2638  mae_ci_low=5.8793  mae_ci_high=6.6395

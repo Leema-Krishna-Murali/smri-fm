@@ -20,14 +20,14 @@ RUNS = tuple(
     for aug in ("aug-none", "aug-train", "aug-test", "aug-both")
 )
 
-# each config's two checkpoints adjacent, so the comparison reads down the table
 ORDER = RUNS + tuple(f"ckpt-walnut_{run}" for run in RUNS)
+ORDER = ORDER + tuple(f"bal_ckpt-walnut_{run}" for run in RUNS)
 
 HEADER = (
-    "| ckpt | depth | train aug | test aug | r | 95% CI | MAE | 95% CI "
+    "| ckpt | depth | train aug | test aug | bal | r | 95% CI | MAE | 95% CI "
     "| camcan r | camcan MAE | alpha | ‖w‖ | time |"
 )
-RULE = "|---" * 13 + "|"
+RULE = "|---" * 14 + "|"
 
 CKPT_NAMES = {
     "pretrain_full_90_10_h100": "pt-full",
@@ -54,6 +54,7 @@ def main() -> None:
             f"| {CKPT_NAMES[Path(cfg.ckpt_path).parent.name]} "
             f"| {'final' if cfg.depth is None else cfg.depth} "
             f"| {cfg.train_aug} | {cfg.test_aug} "
+            f"| {cfg.get('balance_age')} "
             f"| **{m['pearson_r']:.3f}** | {m['pearson_r_ci_low']:.3f} – {m['pearson_r_ci_high']:.3f} "
             f"| **{m['mae']:.2f}** | {m['mae_ci_low']:.2f} – {m['mae_ci_high']:.2f} "
             f"| {camcan_r} | {camcan_mae} "
