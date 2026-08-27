@@ -1,16 +1,4 @@
-"""FOMO task 3: brain age regression, scored by Pearson r and MAE as the challenge scores it.
-
-`Task3Method` is the part we tune -- features, head, hyperparameters. The protocol below it is
-fixed so scores stay comparable across iterations: 20-fold over the 494 subjects, pool the
-out-of-fold predictions, bootstrap subjects for the CI.
-
-`precompute` embeds every subject once and the folds only ever read the cache, so a run is one
-extraction pass and then seconds per fold.
-
-`train` runs that protocol then fits and saves a head; `predict` is the challenge contract, one t1
-path in and one age out. Both go through `Task3Method.predict`, so every fold exercises the path
-the submission will run.
-"""
+"""FOMO task 3: brain age regression."""
 
 import argparse
 import hashlib
@@ -33,7 +21,8 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
 
 import fomo_tune.synthseg as synthseg
-from fomo_tune.backbone import load_backbone
+from fomo_tune.backbone import SmriMaeTransform, load_backbone
+from fomo_tune.perturb import PERTURBATIONS
 from fomo_tune.utils import git_sha, set_seed, setup_logging
 
 logger = logging.getLogger("fomo_tune")
@@ -50,11 +39,11 @@ ALPHAS = np.logspace(-3, 6, 19)
 @dataclass
 class Config:
     task: str = "task3"
-    ckpt_path: str = "hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth"
+    ckpt_path: str = "hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth"
     output_root: str = "output/fomo_tune"
     name: str = "task3"
     evals: tuple[str, ...] = ()
-    depth: int | None = 16
+    depth: int | None = None
     alpha: float | None = None
     balance_age: bool = False
     workers: int = 8
@@ -80,18 +69,20 @@ def age_weights(ages: np.ndarray) -> np.ndarray:
 
 
 class SubjectDataset(Dataset):
-    """One item is one subject's t1w, already through the backbone transform."""
+    """One item is one subject's t1w, perturbed and through the backbone transform."""
 
-    def __init__(self, rows: list[dict], transform):
+    def __init__(self, rows: list[dict], transform, perturb=None):
         self.rows = rows
         self.transform = transform
+        self.perturb = perturb
 
     def __len__(self) -> int:
         return len(self.rows)
 
     def __getitem__(self, index: int) -> tuple[str, dict]:
         row = self.rows[index]
-        return row["subject"], self.transform(row["t1w"])
+        img = self.perturb(row["t1w"]) if self.perturb is not None else row["t1w"]
+        return row["subject"], self.transform(img)
 
 
 class Task3Method:
@@ -99,7 +90,10 @@ class Task3Method:
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.backbone, self.transform = load_backbone(cfg.ckpt_path)
+        self.backbone, transform = load_backbone(cfg.ckpt_path)
+        self.transform = SmriMaeTransform(
+            img_size=transform.img_size, spacing=transform.spacing, masking="zero"
+        )
         self.device = torch.device(cfg.device)
         self.backbone.to(self.device).eval().requires_grad_(False)
         self.cache: dict[str, np.ndarray] = {}
@@ -144,19 +138,19 @@ class Task3Method:
         digest = hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
         return Path(self.cfg.feature_cache) / f"{self.cfg.task}-{tag}-{digest}.joblib"
 
-    def precompute(self, rows: list[dict], tag: str) -> None:
+    def precompute(self, rows: list[dict], tag: str, perturb=None) -> None:
         """Embed every row once, so `fit` and `predict` only read the cache."""
+        # nb, perturbed versions of the same dataset need a different tag to not collide.
         path = self.cache_path(tag)
-        if path is not None and path.exists():
-            cache = joblib.load(path)
-            self.cache.update(cache)
-            logger.info(f"{tag}: loaded {len(cache)} subjects from {path}")
+        self.cache = joblib.load(path) if path is not None and path.exists() else {}
+        if self.cache:
+            logger.info(f"{tag}: loaded {len(self.cache)} subjects from {path}")
 
         pending = [row for row in rows if row["subject"] not in self.cache]
         if not pending:
             return
 
-        dataset = SubjectDataset(pending, self.transform)
+        dataset = SubjectDataset(pending, self.transform, perturb)
         loader = DataLoader(
             dataset,
             batch_size=None,
@@ -196,26 +190,17 @@ class Task3Method:
         self.head.fit(X, y, scaler__sample_weight=weights, ridge__sample_weight=weights)
 
     def predict(self, images: Images, key: str | None = None) -> float:
-        """Age in years.
-
-        `key` names a subject `precompute` has already embedded, which is how cross-validation
-        reuses a held-out subject's features. Without one, as in the container, they are extracted
-        here.
-        """
+        """Age in years. Pass key to load from cache."""
         X = self.cache[key][None] if key is not None else self.features(images)[None]
         return float(self.head.predict(X)[0])
 
     def save(self, model_dir: Path) -> None:
-        """Everything `load` needs but the backbone weights, which stay wherever `ckpt_path`
-        points -- a few hundred KB, so a run saves one without copying a 3.7G checkpoint."""
         model_dir.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(self.cfg, model_dir / "config.yaml")
         joblib.dump(self.head, model_dir / "head.joblib")
 
     @classmethod
     def load(cls, model_dir: Path, **overrides) -> "Task3Method":
-        """Rebuild a fitted method from `save`. Overrides are Config fields, for what differs
-        between here and the container -- the backbone path, the device."""
         cfg = OmegaConf.merge(
             OmegaConf.structured(Config), OmegaConf.load(model_dir / "config.yaml"), overrides
         )
@@ -226,8 +211,6 @@ class Task3Method:
 
 # ---- protocol: the part we hold fixed ---------------------------------------------------
 
-# Every image the task ships. The method picks which of them it wants, as at inference, where the
-# challenge hands over the modalities whether or not a model uses them.
 IMAGE_COLS = ("t1w",)
 
 
@@ -336,13 +319,15 @@ def train(args: argparse.Namespace) -> None:
 
     record["evals"] = {}
     for eval_name in cfg.evals:
-        holdout = list(eval_loaders[eval_name]())
+        # "camcan" is the cohort as it comes; "camcan-thick_slice_5mm" corrupts it on the way in
+        cohort, _, perturbation = eval_name.partition("-")
+        holdout = list(eval_loaders[cohort]())
         holdout_ages = np.array([row["age"] for row in holdout])
         logger.info(
             f"{eval_name}: {len(holdout)} subjects, age {holdout_ages.min():.1f}-"
             f"{holdout_ages.max():.1f} mean {holdout_ages.mean():.1f}"
         )
-        method.precompute(holdout, eval_name)
+        method.precompute(holdout, eval_name, PERTURBATIONS[perturbation] if perturbation else None)
         y_eval, pred_eval = evaluate(holdout, method)
         eval_summary = score(y_eval, pred_eval)
         eval_preds = [
