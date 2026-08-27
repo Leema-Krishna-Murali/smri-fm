@@ -1,4 +1,5 @@
 import nibabel as nib
+import numpy as np
 from nibabel.processing import resample_to_output, smooth_image
 
 
@@ -7,17 +8,36 @@ def canonical(img: nib.Nifti1Image) -> nib.Nifti1Image:
     return nib.as_closest_canonical(nib.Nifti1Image(img.dataobj, img.affine, img.header))
 
 
+def resample(
+    img: nib.Nifti1Image,
+    voxel_sizes: float | tuple[float, float, float],
+    fwhm: float | tuple[float, float, float] | None,
+) -> nib.Nifti1Image:
+    """Resample image to target voxel size, with optional smoothing."""
+    data = np.asarray(img.dataobj, dtype=np.float32)
+    mask = nib.Nifti1Image((data > 0).astype(np.float32), img.affine)
+
+    if fwhm is not None:
+        img = smooth_image(img, fwhm)
+
+    resampled = resample_to_output(img, voxel_sizes, order=1)
+    resampled_mask = resample_to_output(mask, voxel_sizes, order=1)
+
+    # apply the mask to prevent nonzero data "bleeding" into the background.
+    kept = np.where(np.asarray(resampled_mask.dataobj) > 0.5, np.asarray(resampled.dataobj), 0.0)
+    return nib.Nifti1Image(kept.astype(np.float32), resampled.affine)
+
+
 def acquired_at(img: nib.Nifti1Image, mm: float) -> nib.Nifti1Image:
     """An isotropic acquisition at `mm`."""
-    img = canonical(img)
-    return resample_to_output(smooth_image(img, mm), mm, order=1)
+    return resample(canonical(img), mm, mm)
 
 
 def thick_slice(img: nib.Nifti1Image, mm: float) -> nib.Nifti1Image:
     """An anisotropic axial acquisition: `mm` slices, in-plane resolution untouched."""
     img = canonical(img)
     in_plane = nib.affines.voxel_sizes(img.affine)[:2]
-    return resample_to_output(smooth_image(img, (0, 0, mm)), (*in_plane, mm), order=1)
+    return resample(img, (*in_plane, mm), (0, 0, mm))
 
 
 PERTURBATIONS = {

@@ -29,9 +29,6 @@ logger = logging.getLogger("fomo_tune")
 
 Images = dict[str, nib.Nifti1Image]
 
-AGE_RANGE = (20.0, 80.0)
-AGE_BINS = 6
-
 # searched only when `alpha` is null
 ALPHAS = np.logspace(-3, 6, 19)
 
@@ -43,9 +40,9 @@ class Config:
     output_root: str = "output/fomo_tune"
     name: str = "task3"
     evals: tuple[str, ...] = ()
+    train_views: tuple[str, ...] = ()
     depth: int | None = None
     alpha: float | None = None
-    balance_age: bool = False
     workers: int = 8
     feature_cache: str | None = "cache/features"
     device: str = "cuda"
@@ -55,34 +52,28 @@ class Config:
 # ---- method: the part we tune -----------------------------------------------------------
 
 
-def age_weights(ages: np.ndarray) -> np.ndarray:
-    """One over the density of the training ages."""
-    clipped = np.clip(ages, *AGE_RANGE)
-    edges = np.linspace(*AGE_RANGE, AGE_BINS + 1)
-    counts, _ = np.histogram(clipped, bins=edges)
-    index = np.clip(np.digitize(clipped, edges) - 1, 0, len(counts) - 1)
-    weights = 1.0 / counts[index]
-
-    effective = weights.sum() ** 2 / (weights**2).sum()
-    assert effective > 0.5 * len(ages), f"age weights concentrate: effective n {effective:.0f}"
-    return weights
-
-
 class SubjectDataset(Dataset):
-    """One item is one subject's t1w, perturbed and through the backbone transform."""
+    """One item is one subject's views, perturbed and through the backbone transform.
 
-    def __init__(self, rows: list[dict], transform, perturb=None):
+    The clean view is always first, which is the one `predict` reads back.
+    """
+
+    def __init__(self, rows: list[dict], transform, views: tuple[str, ...]):
         self.rows = rows
         self.transform = transform
-        self.perturb = perturb
+        self.views = views
 
     def __len__(self) -> int:
         return len(self.rows)
 
-    def __getitem__(self, index: int) -> tuple[str, dict]:
-        row = self.rows[index]
-        img = self.perturb(row["t1w"]) if self.perturb is not None else row["t1w"]
-        return row["subject"], self.transform(img)
+    def __getitem__(self, index: int) -> tuple[str, list[dict]]:
+        subject = self.rows[index]["subject"]
+        img = self.rows[index]["t1w"]
+        views = [
+            self.transform(img if view == "clean" else PERTURBATIONS[view](img))
+            for view in self.views
+        ]
+        return subject, views
 
 
 class Task3Method:
@@ -130,18 +121,19 @@ class Task3Method:
         """(D,) per subject. A pure function of the images, so training and inference agree."""
         return self.embed(self.transform(images["t1w"]))
 
-    def cache_path(self, tag: str) -> Path | None:
+    def cache_path(self, tag: str, views: tuple[str, ...]) -> Path | None:
         """Where `tag`'s embeddings live, keyed by everything that changes what they are."""
         if not self.cfg.feature_cache:
             return None
-        fingerprint = "|".join([self.cfg.ckpt_path, str(self.cfg.depth), str(self.cfg.seed)])
+        fingerprint = "|".join(
+            [self.cfg.ckpt_path, str(self.cfg.depth), str(self.cfg.seed), *views]
+        )
         digest = hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
         return Path(self.cfg.feature_cache) / f"{self.cfg.task}-{tag}-{digest}.joblib"
 
-    def precompute(self, rows: list[dict], tag: str, perturb=None) -> None:
-        """Embed every row once, so `fit` and `predict` only read the cache."""
-        # nb, perturbed versions of the same dataset need a different tag to not collide.
-        path = self.cache_path(tag)
+    def precompute(self, rows: list[dict], tag: str, views: tuple[str, ...] = ("clean",)) -> None:
+        """Embed every row's views once, so `fit` and `predict` only read the cache."""
+        path = self.cache_path(tag, views)
         self.cache = joblib.load(path) if path is not None and path.exists() else {}
         if self.cache:
             logger.info(f"{tag}: loaded {len(self.cache)} subjects from {path}")
@@ -150,7 +142,7 @@ class Task3Method:
         if not pending:
             return
 
-        dataset = SubjectDataset(pending, self.transform, perturb)
+        dataset = SubjectDataset(pending, self.transform, views)
         loader = DataLoader(
             dataset,
             batch_size=None,
@@ -159,8 +151,8 @@ class Task3Method:
         )
 
         start = time.perf_counter()
-        for index, (subject, sample) in enumerate(loader):
-            self.cache[subject] = self.embed(sample)
+        for index, (subject, samples) in enumerate(loader):
+            self.cache[subject] = np.stack([self.embed(sample) for sample in samples])
             if (index + 1) % 50 == 0:
                 logger.info(
                     f"{tag}: embedded {index + 1}/{len(dataset)} subjects "
@@ -175,23 +167,30 @@ class Task3Method:
             tmp.rename(path)
 
     def fit(self, rows: list[dict]) -> None:
-        X = np.stack([self.cache[row["subject"]] for row in rows])
-        y = np.array([row["age"] for row in rows], dtype=float)
+        views = np.stack([self.cache[row["subject"]] for row in rows])
+        ages = np.array([row["age"] for row in rows], dtype=float)
+        n_subjects, n_views, _ = views.shape
 
-        weights = age_weights(y) if self.cfg.balance_age else np.ones(len(rows))
-        # rescaled to mean one because Ridge trades sample_weight against alpha
-        weights = weights * len(rows) / weights.sum()
+        X = views.reshape(n_subjects * n_views, -1)
+        y = np.repeat(ages, n_views)
 
-        # RidgeCV picks alpha by its own leave-one-out and refits, so it is the head as well
-        ridge = (
-            Ridge(alpha=self.cfg.alpha) if self.cfg.alpha is not None else RidgeCV(alphas=ALPHAS)
-        )
-        self.head = Pipeline([("scaler", StandardScaler()), ("ridge", ridge)])
-        self.head.fit(X, y, scaler__sample_weight=weights, ridge__sample_weight=weights)
+        alpha = self.cfg.alpha
+        if alpha is None:
+            # over the clean views alone: RidgeCV's leave-one-out would otherwise hold out one
+            # view of a subject while its siblings stayed in, and under-regularize
+            clean = np.arange(n_subjects) * n_views
+            selector = Pipeline([("scaler", StandardScaler()), ("ridge", RidgeCV(alphas=ALPHAS))])
+            selector.fit(X[clean], y[clean])
+            alpha = float(selector[-1].alpha_)
+
+        self.head = Pipeline([("scaler", StandardScaler()), ("ridge", Ridge(alpha=alpha))])
+        # one subject's views carry a total weight of one, so alpha means the same at any view count
+        weight = np.full(len(X), 1.0 / n_views)
+        self.head.fit(X, y, ridge__sample_weight=weight)
 
     def predict(self, images: Images, key: str | None = None) -> float:
         """Age in years. Pass key to load from cache."""
-        X = self.cache[key][None] if key is not None else self.features(images)[None]
+        X = self.cache[key][:1] if key is not None else self.features(images)[None]
         return float(self.head.predict(X)[0])
 
     def save(self, model_dir: Path) -> None:
@@ -296,7 +295,8 @@ def train(args: argparse.Namespace) -> None:
     )
 
     method = Task3Method(cfg)
-    method.precompute(rows, cfg.task)
+    train_views = ("clean", *cfg.train_views)
+    method.precompute(rows, cfg.task, train_views)
 
     start = time.perf_counter()
     y, oof = cross_validate(rows, method)
@@ -327,7 +327,7 @@ def train(args: argparse.Namespace) -> None:
             f"{eval_name}: {len(holdout)} subjects, age {holdout_ages.min():.1f}-"
             f"{holdout_ages.max():.1f} mean {holdout_ages.mean():.1f}"
         )
-        method.precompute(holdout, eval_name, PERTURBATIONS[perturbation] if perturbation else None)
+        method.precompute(holdout, eval_name, (perturbation or "clean",))
         y_eval, pred_eval = evaluate(holdout, method)
         eval_summary = score(y_eval, pred_eval)
         eval_preds = [
