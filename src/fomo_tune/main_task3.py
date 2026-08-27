@@ -39,8 +39,13 @@ class Config:
     ckpt_path: str = "hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth"
     output_root: str = "output/fomo_tune"
     name: str = "task3"
-    evals: tuple[str, ...] = ()
-    train_views: tuple[str, ...] = ()
+    evals: tuple[str, ...] = (
+        "camcan",
+        "camcan-thick_slice_5mm",
+        "camcan-acquired_at_2mm",
+        "camcan-random_scale",
+    )
+    train_views: tuple[str, ...] = ("thick_slice_5mm", "acquired_at_2mm", "random_scale")
     depth: int | None = None
     alpha: float | None = None
     workers: int = 8

@@ -1,0 +1,62 @@
+16:20:28 run noaug (git a54f1d4)
+16:20:28 config:
+task: task3
+ckpt_path: hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth
+output_root: experiments/task3_perturb/output
+name: noaug
+evals:
+- camcan
+- camcan-thick_slice_5mm
+- camcan-acquired_at_2mm
+- camcan-random_scale
+train_views: []
+depth: null
+alpha: null
+workers: 12
+feature_cache: cache/features
+device: cuda
+seed: 4466
+16:21:34 dataset: 494 subjects, age 19-80 mean 45.2
+16:21:39 task3: loaded 494 subjects from cache/features/task3-task3-48e800caf211.joblib
+16:21:39 fold 1/20 n=25 mae=3.10 (0s)
+16:21:39 fold 2/20 n=25 mae=4.53 (0s)
+16:21:39 fold 3/20 n=25 mae=3.27 (0s)
+16:21:39 fold 4/20 n=25 mae=3.63 (1s)
+16:21:39 fold 5/20 n=25 mae=3.91 (1s)
+16:21:40 fold 6/20 n=25 mae=3.18 (1s)
+16:21:40 fold 7/20 n=25 mae=3.77 (1s)
+16:21:40 fold 8/20 n=25 mae=2.47 (1s)
+16:21:40 fold 9/20 n=25 mae=4.09 (2s)
+16:21:41 fold 10/20 n=25 mae=3.52 (2s)
+16:21:41 fold 11/20 n=25 mae=3.24 (2s)
+16:21:41 fold 12/20 n=25 mae=3.62 (2s)
+16:21:41 fold 13/20 n=25 mae=2.57 (2s)
+16:21:41 fold 14/20 n=25 mae=3.31 (2s)
+16:21:41 fold 15/20 n=24 mae=3.88 (3s)
+16:21:42 fold 16/20 n=24 mae=3.58 (3s)
+16:21:42 fold 17/20 n=24 mae=3.55 (3s)
+16:21:42 fold 18/20 n=24 mae=3.50 (3s)
+16:21:42 fold 19/20 n=24 mae=3.45 (3s)
+16:21:42 fold 20/20 n=24 mae=2.85 (4s)
+16:21:43 result: pearson_r=0.9688  pearson_r_ci_low=0.9638  pearson_r_ci_high=0.9731  mae=3.4498  mae_ci_low=3.2338  mae_ci_high=3.6821  (4s)
+16:22:36 camcan: 481 subjects, age 18.6-89.0 mean 58.2
+16:22:36 camcan: loaded 481 subjects from cache/features/task3-camcan-48e800caf211.joblib
+16:22:36 camcan: pearson_r=0.9467  pearson_r_ci_low=0.9369  pearson_r_ci_high=0.9558  mae=5.4324  mae_ci_low=5.0845  mae_ci_high=5.7896
+16:23:30 camcan-thick_slice_5mm: 481 subjects, age 18.6-89.0 mean 58.2
+16:23:30 camcan-thick_slice_5mm: loaded 481 subjects from cache/features/task3-camcan-thick_slice_5mm-cae5f110dc9b.joblib
+16:23:30 camcan-thick_slice_5mm: pearson_r=0.9185  pearson_r_ci_low=0.9044  pearson_r_ci_high=0.9309  mae=9.3184  mae_ci_low=8.7618  mae_ci_high=9.8809
+16:24:26 camcan-acquired_at_2mm: 481 subjects, age 18.6-89.0 mean 58.2
+16:24:26 camcan-acquired_at_2mm: loaded 481 subjects from cache/features/task3-camcan-acquired_at_2mm-994db7b1adb3.joblib
+16:24:26 camcan-acquired_at_2mm: pearson_r=0.9278  pearson_r_ci_low=0.9155  pearson_r_ci_high=0.9394  mae=7.9039  mae_ci_low=7.4055  mae_ci_high=8.3928
+16:25:18 camcan-random_scale: 481 subjects, age 18.6-89.0 mean 58.2
+16:25:40 camcan-random_scale: embedded 50/481 subjects (22s)
+16:25:45 camcan-random_scale: embedded 100/481 subjects (27s)
+16:25:51 camcan-random_scale: embedded 150/481 subjects (32s)
+16:25:56 camcan-random_scale: embedded 200/481 subjects (38s)
+16:26:01 camcan-random_scale: embedded 250/481 subjects (43s)
+16:26:07 camcan-random_scale: embedded 300/481 subjects (48s)
+16:26:12 camcan-random_scale: embedded 350/481 subjects (54s)
+16:26:17 camcan-random_scale: embedded 400/481 subjects (59s)
+16:26:23 camcan-random_scale: embedded 450/481 subjects (64s)
+16:26:27 camcan-random_scale: 481 subjects (69s)
+16:26:28 camcan-random_scale: pearson_r=0.8839  pearson_r_ci_low=0.8655  pearson_r_ci_high=0.8997  mae=8.1303  mae_ci_low=7.5847  mae_ci_high=8.6792
