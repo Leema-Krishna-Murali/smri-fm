@@ -1,3 +1,5 @@
+"""Mihir's K2 augmentation. Parked: swept in `experiments/task3_v2`, aug-none won."""
+
 import hashlib
 from collections.abc import Generator
 

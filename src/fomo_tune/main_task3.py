@@ -4,9 +4,8 @@
 fixed so scores stay comparable across iterations: 20-fold over the 494 subjects, pool the
 out-of-fold predictions, bootstrap subjects for the CI.
 
-The method fits on K2 augmented views of every subject and averages the same views at test time.
-Views are deterministic in the subject and seed, so `precompute` embeds each one exactly once and
-the folds only ever read the cache. Set `train_aug=false test_aug=false` for the plain baseline.
+`precompute` embeds every subject once and the folds only ever read the cache, so a run is one
+extraction pass and then seconds per fold.
 
 `train` runs that protocol then fits and saves a head; `predict` is the challenge contract, one t1
 path in and one age out. Both go through `Task3Method.predict`, so every fold exercises the path
@@ -29,22 +28,17 @@ import torch
 from omegaconf import OmegaConf
 from sklearn.linear_model import Ridge, RidgeCV
 from sklearn.model_selection import KFold
-from sklearn.pipeline import make_pipeline
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
 
 import fomo_tune.synthseg as synthseg
-from fomo_tune import task3_augmentation
 from fomo_tune.backbone import load_backbone
-from fomo_tune.task3_augmentation import K2_DRAWS, augment_draw, k2_views
 from fomo_tune.utils import git_sha, set_seed, setup_logging
 
 logger = logging.getLogger("fomo_tune")
 
 Images = dict[str, nib.Nifti1Image]
-
-# seeds the test-time views when the caller has no subject to key on, as in the container
-TTA_SUBJECT = "t1"
 
 AGE_RANGE = (20.0, 80.0)
 AGE_BINS = 6
@@ -62,8 +56,6 @@ class Config:
     evals: tuple[str, ...] = ()
     depth: int | None = 16
     alpha: float | None = None
-    train_aug: bool = True
-    test_aug: bool = True
     balance_age: bool = False
     workers: int = 8
     feature_cache: str | None = "cache/features"
@@ -87,48 +79,23 @@ def age_weights(ages: np.ndarray) -> np.ndarray:
     return weights
 
 
-class ViewDataset(Dataset):
-    """One item is one subject's views for one draw, already through the backbone transform.
+class SubjectDataset(Dataset):
+    """One item is one subject's t1w, already through the backbone transform."""
 
-    Splitting on the draw rather than the subject halves the volumes in flight per worker.
-    """
-
-    def __init__(self, rows: list[dict], transform, seed: int):
+    def __init__(self, rows: list[dict], transform):
         self.rows = rows
         self.transform = transform
-        self.seed = seed
-        self.specs = [(index, draw) for index in range(len(rows)) for draw in K2_DRAWS]
 
     def __len__(self) -> int:
-        return len(self.specs)
+        return len(self.rows)
 
-    def __getitem__(self, index: int) -> list[tuple[str, dict, dict]]:
-        row_index, draw = self.specs[index]
-        row = self.rows[row_index]
-
-        views = [
-            view
-            for view in augment_draw(row, self.seed, draw)
-            if draw == K2_DRAWS[0] or view["variant"] != "clean"
-        ]
-
-        return [
-            (
-                row["subject"],
-                {
-                    "key": view["subject"],
-                    "variant": view["variant"],
-                    "age": float(view["age"]),
-                    "fit_weight": float(view["fit_weight"]),
-                },
-                self.transform(view["t1w"]),
-            )
-            for view in views
-        ]
+    def __getitem__(self, index: int) -> tuple[str, dict]:
+        row = self.rows[index]
+        return row["subject"], self.transform(row["t1w"])
 
 
 class Task3Method:
-    """Frozen sMRI MAE, mean-pooled tokens over the t1w, ridge head over K2 augmented views."""
+    """Frozen sMRI MAE, mean-pooled tokens over the t1w, ridge head."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -136,7 +103,6 @@ class Task3Method:
         self.device = torch.device(cfg.device)
         self.backbone.to(self.device).eval().requires_grad_(False)
         self.cache: dict[str, np.ndarray] = {}
-        self.views: dict[str, list[dict]] = {}
         self.head = None
 
     @torch.inference_mode()
@@ -171,35 +137,26 @@ class Task3Method:
         return self.embed(self.transform(images["t1w"]))
 
     def cache_path(self, tag: str) -> Path | None:
-        """Where `tag`'s embedded views live. The augmentation source is in the fingerprint, so
-        editing it invalidates the cache rather than silently reusing the old views."""
+        """Where `tag`'s embeddings live, keyed by everything that changes what they are."""
         if not self.cfg.feature_cache:
             return None
-        fingerprint = "|".join(
-            [
-                self.cfg.ckpt_path,
-                str(self.cfg.depth),
-                str(self.cfg.seed),
-                Path(task3_augmentation.__file__).read_text(),
-            ]
-        )
+        fingerprint = "|".join([self.cfg.ckpt_path, str(self.cfg.depth), str(self.cfg.seed)])
         digest = hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
         return Path(self.cfg.feature_cache) / f"{self.cfg.task}-{tag}-{digest}.joblib"
 
     def precompute(self, rows: list[dict], tag: str) -> None:
-        """Embed every view of every row once, so `fit` and `predict` only read the cache."""
+        """Embed every row once, so `fit` and `predict` only read the cache."""
         path = self.cache_path(tag)
         if path is not None and path.exists():
-            state = joblib.load(path)
-            self.cache.update(state["cache"])
-            self.views.update(state["views"])
-            logger.info(f"{tag}: loaded {len(state['views'])} subjects from {path}")
+            cache = joblib.load(path)
+            self.cache.update(cache)
+            logger.info(f"{tag}: loaded {len(cache)} subjects from {path}")
 
-        pending = [row for row in rows if row["subject"] not in self.views]
+        pending = [row for row in rows if row["subject"] not in self.cache]
         if not pending:
             return
 
-        dataset = ViewDataset(pending, self.transform, self.cfg.seed)
+        dataset = SubjectDataset(pending, self.transform)
         loader = DataLoader(
             dataset,
             batch_size=None,
@@ -208,94 +165,45 @@ class Task3Method:
         )
 
         start = time.perf_counter()
-        for index, items in enumerate(loader):
-            for subject, record, sample in items:
-                self.cache[record["key"]] = self.embed(sample)
-                self.views.setdefault(subject, []).append(record)
-            if (index + 1) % 20 == 0:
+        for index, (subject, sample) in enumerate(loader):
+            self.cache[subject] = self.embed(sample)
+            if (index + 1) % 50 == 0:
                 logger.info(
-                    f"{tag}: embedded {index + 1}/{len(dataset)} draws "
+                    f"{tag}: embedded {index + 1}/{len(dataset)} subjects "
                     f"({time.perf_counter() - start:.0f}s)"
                 )
-        logger.info(
-            f"{tag}: {len(pending)} subjects, {sum(len(self.views[r['subject']]) for r in pending)} "
-            f"views ({time.perf_counter() - start:.0f}s)"
-        )
+        logger.info(f"{tag}: {len(pending)} subjects ({time.perf_counter() - start:.0f}s)")
 
         if path is not None:
-            views = {row["subject"]: self.views[row["subject"]] for row in rows}
-            cache = {
-                record["key"]: self.cache[record["key"]]
-                for records in views.values()
-                for record in records
-            }
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.parent / f".tmp-{os.getpid()}-{path.name}"
-            joblib.dump({"cache": cache, "views": views}, tmp)
+            joblib.dump({row["subject"]: self.cache[row["subject"]] for row in rows}, tmp)
             tmp.rename(path)
 
     def fit(self, rows: list[dict]) -> None:
-        records = [
-            record
-            for row in rows
-            for record in self.views[row["subject"]]
-            if self.cfg.train_aug or record["variant"] == "clean"
-        ]
-        X = np.stack([self.cache[record["key"]] for record in records])
-        y = np.array([record["age"] for record in records], dtype=float)
-        weights = np.array([record["fit_weight"] for record in records], dtype=float)
+        X = np.stack([self.cache[row["subject"]] for row in rows])
+        y = np.array([row["age"] for row in rows], dtype=float)
 
-        if self.cfg.balance_age:
-            weights = weights * age_weights(y)
-
-        # one subject's views carry a total weight of one, so alpha means the same in every config
+        weights = age_weights(y) if self.cfg.balance_age else np.ones(len(rows))
+        # rescaled to mean one because Ridge trades sample_weight against alpha
         weights = weights * len(rows) / weights.sum()
 
-        alpha = self.cfg.alpha
-        if alpha is None:
-            # over the clean views alone, where one row is one subject. Rescaled to mean one
-            # because Ridge trades sample_weight against alpha.
-            clean = np.array([record["variant"] == "clean" for record in records], dtype=bool)
-            clean_weights = weights[clean] * clean.sum() / weights[clean].sum()
-            selector = make_pipeline(StandardScaler(), RidgeCV(alphas=ALPHAS))
-            selector.fit(
-                X[clean],
-                y[clean],
-                standardscaler__sample_weight=clean_weights,
-                ridgecv__sample_weight=clean_weights,
-            )
-            alpha = float(selector[-1].alpha_)
-
-        self.head = make_pipeline(StandardScaler(), Ridge(alpha=alpha))
-        self.head.fit(
-            X,
-            y,
-            standardscaler__sample_weight=weights,
-            ridge__sample_weight=weights,
+        # RidgeCV picks alpha by its own leave-one-out and refits, so it is the head as well
+        ridge = (
+            Ridge(alpha=self.cfg.alpha) if self.cfg.alpha is not None else RidgeCV(alphas=ALPHAS)
         )
+        self.head = Pipeline([("scaler", StandardScaler()), ("ridge", ridge)])
+        self.head.fit(X, y, scaler__sample_weight=weights, ridge__sample_weight=weights)
 
     def predict(self, images: Images, key: str | None = None) -> float:
-        """Age in years, a weighted average over the test-time views.
+        """Age in years.
 
         `key` names a subject `precompute` has already embedded, which is how cross-validation
-        reuses a held-out subject's views. Without one, as in the container, the views are built
-        here and seeded by a fixed pseudo-subject.
+        reuses a held-out subject's features. Without one, as in the container, they are extracted
+        here.
         """
-        if key is not None:
-            records = self.views[key]
-            if not self.cfg.test_aug:
-                records = [record for record in records if record["variant"] == "clean"]
-            X = np.stack([self.cache[record["key"]] for record in records])
-            weights = np.array([record["fit_weight"] for record in records], dtype=float)
-        elif self.cfg.test_aug:
-            row = {"subject": TTA_SUBJECT, "age": 0.0, "t1w": images["t1w"]}
-            views = list(k2_views(row, self.cfg.seed))
-            X = np.stack([self.features(view) for view in views])
-            weights = np.array([view["fit_weight"] for view in views], dtype=float)
-        else:
-            X = self.features(images)[None]
-            weights = np.ones(1)
-        return float(self.head.predict(X) @ weights / weights.sum())
+        X = self.cache[key][None] if key is not None else self.features(images)[None]
+        return float(self.head.predict(X)[0])
 
     def save(self, model_dir: Path) -> None:
         """Everything `load` needs but the backbone weights, which stay wherever `ckpt_path`
