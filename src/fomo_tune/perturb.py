@@ -40,7 +40,17 @@ def thick_slice(img: nib.Nifti1Image, mm: float) -> nib.Nifti1Image:
     return resample(img, (*in_plane, mm), (0, 0, mm))
 
 
+def random_scale(img: nib.Nifti1Image, low: float, high: float) -> nib.Nifti1Image:
+    """Claim a different voxel size, so the head reaches the backbone at a different physical size.
+
+    Header only, so the array is untouched and this isolates apparent scale from any resampling.
+    """
+    scale = np.random.default_rng().uniform(low, high)
+    return nib.Nifti1Image(img.dataobj, img.affine @ np.diag([scale, scale, scale, 1.0]))
+
+
 PERTURBATIONS = {
     "thick_slice_5mm": lambda img: thick_slice(img, 5.0),
     "acquired_at_2mm": lambda img: acquired_at(img, 2.0),
+    "random_scale": lambda img: random_scale(img, 0.9, 1.1),
 }
