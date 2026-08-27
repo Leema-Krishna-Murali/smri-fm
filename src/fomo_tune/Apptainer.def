@@ -6,7 +6,8 @@ From: python:3.11-slim
 # pointing apptainer at this file.
 #
 # Versions are pinned to the training environment: numpy, scikit-learn and joblib because they
-# unpickle `head.joblib`, torch because that is what the checkpoint was written by.
+# unpickle `head.joblib`, torch because that is what the checkpoint was written by, scipy because
+# task 3's augmentation resamples with it at predict time.
 
 %files
     fomo_tune /app/fomo_tune
@@ -24,6 +25,7 @@ From: python:3.11-slim
         timm==1.0.27 \
         huggingface-hub==0.36.2 \
         scikit-learn==1.8.0 \
+        scipy==1.17.1 \
         joblib==1.5.3 \
         omegaconf==2.3.0 \
         h5py==3.16.0 \

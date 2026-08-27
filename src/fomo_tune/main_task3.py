@@ -1,17 +1,10 @@
-"""FOMO task 3: brain age regression, scored by Pearson r and MAE as the challenge scores it.
-
-`Task3Method` is the part we tune -- features, head, hyperparameters. The protocol below it is
-fixed so scores stay comparable across iterations: 20-fold over the 494 subjects, pool the
-out-of-fold predictions, bootstrap subjects for the CI.
-
-`train` runs that protocol then fits and saves a head; `predict` is the challenge contract, one t1
-path in and one age out. Both go through `Task3Method.predict`, so every fold exercises the path
-the submission will run.
-"""
+"""FOMO task 3: brain age regression."""
 
 import argparse
+import hashlib
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,31 +16,69 @@ import torch
 from omegaconf import OmegaConf
 from sklearn.linear_model import Ridge, RidgeCV
 from sklearn.model_selection import KFold
-from sklearn.pipeline import make_pipeline
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from torch.utils.data import DataLoader, Dataset
 
-from fomo_tune.backbone import load_backbone
-from fomo_tune.task3_augmentation import K2_WEIGHTS, k2_views
+import fomo_tune.synthseg as synthseg
+from fomo_tune.backbone import SmriMaeTransform, load_backbone
+from fomo_tune.perturb import PERTURBATIONS
 from fomo_tune.utils import git_sha, set_seed, setup_logging
 
 logger = logging.getLogger("fomo_tune")
 
 Images = dict[str, nib.Nifti1Image]
 
+# searched only when `alpha` is null
+ALPHAS = np.logspace(-3, 6, 19)
+
 
 @dataclass
 class Config:
     task: str = "task3"
-    ckpt_path: str = "hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth"
+    ckpt_path: str = "hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth"
     output_root: str = "output/fomo_tune"
     name: str = "task3"
-    evals: tuple[str, ...] = ()
+    evals: tuple[str, ...] = (
+        "camcan",
+        "camcan-thick_slice_5mm",
+        "camcan-acquired_at_2mm",
+        "camcan-random_scale",
+    )
+    train_views: tuple[str, ...] = ("thick_slice_5mm", "acquired_at_2mm", "random_scale")
+    depth: int | None = None
+    alpha: float | None = None
+    workers: int = 8
+    feature_cache: str | None = "cache/features"
     device: str = "cuda"
     seed: int = 4466
-    tta: bool = True
 
 
 # ---- method: the part we tune -----------------------------------------------------------
+
+
+class SubjectDataset(Dataset):
+    """One item is one subject's views, perturbed and through the backbone transform.
+
+    The clean view is always first, which is the one `predict` reads back.
+    """
+
+    def __init__(self, rows: list[dict], transform, views: tuple[str, ...]):
+        self.rows = rows
+        self.transform = transform
+        self.views = views
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: int) -> tuple[str, list[dict]]:
+        subject = self.rows[index]["subject"]
+        img = self.rows[index]["t1w"]
+        views = [
+            self.transform(img if view == "clean" else PERTURBATIONS[view](img))
+            for view in self.views
+        ]
+        return subject, views
 
 
 class Task3Method:
@@ -55,83 +86,125 @@ class Task3Method:
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.backbone, self.transform = load_backbone(cfg.ckpt_path)
+        self.backbone, transform = load_backbone(cfg.ckpt_path)
+        self.transform = SmriMaeTransform(
+            img_size=transform.img_size, spacing=transform.spacing, masking="zero"
+        )
         self.device = torch.device(cfg.device)
         self.backbone.to(self.device).eval().requires_grad_(False)
         self.cache: dict[str, np.ndarray] = {}
         self.head = None
-        self._block_embed = None
-
-        encoder = self.backbone.encoder
-
-        def capture(module, args, output):
-            del module, args
-            tokens = encoder.norm(output)[encoder.num_prefix_tokens :]
-            self._block_embed = tokens.mean(dim=0)
-
-        encoder.blocks[15].register_forward_hook(capture)
 
     @torch.inference_mode()
+    def embed(self, sample: dict[str, torch.Tensor]) -> np.ndarray:
+        """(D,) from one prepared sample, mean-pooled over its post-norm tokens `depth` blocks in."""
+        batch = {key: value[None].to(self.device) for key, value in sample.items()}
+
+        encoder = self.backbone.encoder
+        captured = []
+        handle = None
+        if self.cfg.depth is not None:
+            handle = encoder.blocks[self.cfg.depth].register_forward_pre_hook(
+                lambda module, args: captured.append(args[0])
+            )
+        try:
+            with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
+                out = self.backbone(batch)
+        finally:
+            if handle is not None:
+                handle.remove()
+
+        # batch size 1 leaves no padded token slots, which the depth hook's flat slice relies on
+        assert out["token_mask"].all(), "the token sequence is padded"
+        if self.cfg.depth is None:
+            tokens = out["patch_embeds"][0]
+        else:
+            tokens = encoder.norm(captured[0])[encoder.num_prefix_tokens :]
+        return tokens.mean(dim=0).float().cpu().numpy()
+
     def features(self, images: Images) -> np.ndarray:
         """(D,) per subject. A pure function of the images, so training and inference agree."""
-        sample = self.transform(images["t1w"])
-        batch = {key: value[None].to(self.device) for key, value in sample.items()}
-        self._block_embed = None
+        return self.embed(self.transform(images["t1w"]))
 
-        with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
-            self.backbone(batch)
+    def cache_path(self, tag: str, views: tuple[str, ...]) -> Path | None:
+        """Where `tag`'s embeddings live, keyed by everything that changes what they are."""
+        if not self.cfg.feature_cache:
+            return None
+        fingerprint = "|".join(
+            [self.cfg.ckpt_path, str(self.cfg.depth), str(self.cfg.seed), *views]
+        )
+        digest = hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
+        return Path(self.cfg.feature_cache) / f"{self.cfg.task}-{tag}-{digest}.joblib"
 
-        return self._block_embed.float().cpu().numpy()
+    def precompute(self, rows: list[dict], tag: str, views: tuple[str, ...] = ("clean",)) -> None:
+        """Embed every row's views once, so `fit` and `predict` only read the cache."""
+        path = self.cache_path(tag, views)
+        self.cache = joblib.load(path) if path is not None and path.exists() else {}
+        if self.cache:
+            logger.info(f"{tag}: loaded {len(self.cache)} subjects from {path}")
 
-    def cached_features(self, row: dict) -> np.ndarray:
-        if row["subject"] not in self.cache:
-            self.cache[row["subject"]] = self.features(row)
-        return self.cache[row["subject"]]
+        pending = [row for row in rows if row["subject"] not in self.cache]
+        if not pending:
+            return
 
-    def fit(self, rows: list[dict]) -> None:
-        features, ages, weights, clean = [], [], [], []
-        for row in rows:
-            for view in k2_views(row, self.cfg.seed):
-                features.append(self.cached_features(view))
-                ages.append(view["age"])
-                weights.append(view["fit_weight"])
-                clean.append(view["variant"] == "clean")
-        X = np.stack(features)
-        y = np.array(ages, dtype=float)
-        sample_weight = np.array(weights, dtype=float)
-        clean = np.array(clean, dtype=bool)
-        selector = make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(-3, 6, 19)))
-        selector.fit(X[clean], y[clean])
-        self.head = make_pipeline(StandardScaler(), Ridge(alpha=float(selector[-1].alpha_)))
-        self.head.fit(
-            X,
-            y,
-            standardscaler__sample_weight=sample_weight,
-            ridge__sample_weight=sample_weight,
+        dataset = SubjectDataset(pending, self.transform, views)
+        loader = DataLoader(
+            dataset,
+            batch_size=None,
+            num_workers=self.cfg.workers,
+            prefetch_factor=2 if self.cfg.workers else None,
         )
 
-    def predict(self, images: Images) -> float:
-        """Age in years."""
-        if not self.cfg.tta:
-            return float(self.head.predict(self.features(images)[None])[0])
-        row = {"subject": "t1", "age": 0.0, "t1w": images["t1w"]}
-        preds = [
-            float(self.head.predict(self.features(view)[None])[0])
-            for view in k2_views(row, self.cfg.seed)
-        ]
-        return float(np.array(preds) @ K2_WEIGHTS)
+        start = time.perf_counter()
+        for index, (subject, samples) in enumerate(loader):
+            self.cache[subject] = np.stack([self.embed(sample) for sample in samples])
+            if (index + 1) % 50 == 0:
+                logger.info(
+                    f"{tag}: embedded {index + 1}/{len(dataset)} subjects "
+                    f"({time.perf_counter() - start:.0f}s)"
+                )
+        logger.info(f"{tag}: {len(pending)} subjects ({time.perf_counter() - start:.0f}s)")
+
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.parent / f".tmp-{os.getpid()}-{path.name}"
+            joblib.dump({row["subject"]: self.cache[row["subject"]] for row in rows}, tmp)
+            tmp.rename(path)
+
+    def fit(self, rows: list[dict]) -> None:
+        views = np.stack([self.cache[row["subject"]] for row in rows])
+        ages = np.array([row["age"] for row in rows], dtype=float)
+        n_subjects, n_views, _ = views.shape
+
+        X = views.reshape(n_subjects * n_views, -1)
+        y = np.repeat(ages, n_views)
+
+        alpha = self.cfg.alpha
+        if alpha is None:
+            # over the clean views alone: RidgeCV's leave-one-out would otherwise hold out one
+            # view of a subject while its siblings stayed in, and under-regularize
+            clean = np.arange(n_subjects) * n_views
+            selector = Pipeline([("scaler", StandardScaler()), ("ridge", RidgeCV(alphas=ALPHAS))])
+            selector.fit(X[clean], y[clean])
+            alpha = float(selector[-1].alpha_)
+
+        self.head = Pipeline([("scaler", StandardScaler()), ("ridge", Ridge(alpha=alpha))])
+        # one subject's views carry a total weight of one, so alpha means the same at any view count
+        weight = np.full(len(X), 1.0 / n_views)
+        self.head.fit(X, y, ridge__sample_weight=weight)
+
+    def predict(self, images: Images, key: str | None = None) -> float:
+        """Age in years. Pass key to load from cache."""
+        X = self.cache[key][:1] if key is not None else self.features(images)[None]
+        return float(self.head.predict(X)[0])
 
     def save(self, model_dir: Path) -> None:
-        """Everything `load` needs but the backbone weights, which stay wherever `ckpt_path`
-        points -- a few hundred KB, so a run saves one without copying a 3.7G checkpoint."""
         model_dir.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(self.cfg, model_dir / "config.yaml")
         joblib.dump(self.head, model_dir / "head.joblib")
 
     @classmethod
     def load(cls, model_dir: Path, **overrides) -> "Task3Method":
-        """Rebuild a fitted method from `save`. Overrides are Config fields, for what differs
-        between here and the container -- the backbone path, the device."""
         cfg = OmegaConf.merge(
             OmegaConf.structured(Config), OmegaConf.load(model_dir / "config.yaml"), overrides
         )
@@ -142,8 +215,6 @@ class Task3Method:
 
 # ---- protocol: the part we hold fixed ---------------------------------------------------
 
-# Every image the task ships. The method picks which of them it wants, as at inference, where the
-# challenge hands over the modalities whether or not a model uses them.
 IMAGE_COLS = ("t1w",)
 
 
@@ -158,7 +229,8 @@ def cross_validate(
     for fold, (train, test) in enumerate(folds.split(rows)):
         method.fit([rows[i] for i in train])
         for i in test:
-            oof[i] = method.predict({key: rows[i][key] for key in IMAGE_COLS})
+            images = {col: rows[i][col] for col in IMAGE_COLS}
+            oof[i] = method.predict(images, key=rows[i]["subject"])
         logger.info(
             f"fold {fold + 1}/{n_folds} n={len(test)} mae={np.abs(y[test] - oof[test]).mean():.2f} "
             f"({time.perf_counter() - start:.0f}s)"
@@ -170,7 +242,8 @@ def evaluate(rows: list[dict], method: Task3Method) -> tuple[np.ndarray, np.ndar
     """Age for every subject from an already-fitted method, through `predict`."""
     y = np.array([row["age"] for row in rows], dtype=float)
     pred = np.array(
-        [method.predict({key: row[key] for key in IMAGE_COLS}) for row in rows], dtype=float
+        [method.predict({col: row[col] for col in IMAGE_COLS}, key=row["subject"]) for row in rows],
+        dtype=float,
     )
     return y, pred
 
@@ -207,7 +280,7 @@ def train(args: argparse.Namespace) -> None:
     from fomo_tune.datasets import load_camcan, load_fomo_task3
 
     eval_loaders = {
-        "camcan": load_camcan,
+        "camcan": lambda: synthseg.synthseg_strip_dataset(load_camcan(), source="t1w"),
     }
 
     cfg = OmegaConf.merge(OmegaConf.structured(Config), OmegaConf.from_dotlist(args.overrides))
@@ -227,6 +300,9 @@ def train(args: argparse.Namespace) -> None:
     )
 
     method = Task3Method(cfg)
+    train_views = ("clean", *cfg.train_views)
+    method.precompute(rows, cfg.task, train_views)
+
     start = time.perf_counter()
     y, oof = cross_validate(rows, method)
     run_time = time.perf_counter() - start
@@ -248,12 +324,15 @@ def train(args: argparse.Namespace) -> None:
 
     record["evals"] = {}
     for eval_name in cfg.evals:
-        holdout = list(eval_loaders[eval_name]())
+        # "camcan" is the cohort as it comes; "camcan-thick_slice_5mm" corrupts it on the way in
+        cohort, _, perturbation = eval_name.partition("-")
+        holdout = list(eval_loaders[cohort]())
         holdout_ages = np.array([row["age"] for row in holdout])
         logger.info(
             f"{eval_name}: {len(holdout)} subjects, age {holdout_ages.min():.1f}-"
             f"{holdout_ages.max():.1f} mean {holdout_ages.mean():.1f}"
         )
+        method.precompute(holdout, eval_name, (perturbation or "clean",))
         y_eval, pred_eval = evaluate(holdout, method)
         eval_summary = score(y_eval, pred_eval)
         eval_preds = [
@@ -281,7 +360,10 @@ def predict(args: argparse.Namespace) -> None:
         overrides["ckpt_path"] = args.ckpt_path
     method = Task3Method.load(args.model_dir, **overrides)
 
-    age = method.predict({"t1w": nib.load(args.t1)})
+    img = nib.load(args.t1)
+    seg = synthseg.synthseg(img)
+    img = synthseg.applymask(img, seg)
+    age = method.predict({"t1w": img})
 
     args.output.write_text(f"{age:.6f}\n")
 

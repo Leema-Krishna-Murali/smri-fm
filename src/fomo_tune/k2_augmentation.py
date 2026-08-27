@@ -1,3 +1,5 @@
+"""Mihir's K2 augmentation. Parked: swept in `experiments/task3_v2`, aug-none won."""
+
 import hashlib
 from collections.abc import Generator
 
@@ -33,11 +35,7 @@ def subject_entropy(subject: str, seed_namespace: str = "fomo") -> tuple[int, in
 def rng_for_view(
     seed: int, subject: str, variant_index: int, draw: int, seed_namespace: str = "fomo"
 ) -> np.random.Generator:
-    if draw == 0:
-        entropy = [seed, sum(map(ord, subject)), variant_index]
-    else:
-        assert draw == 1, draw
-        entropy = [seed, *subject_entropy(subject, seed_namespace), variant_index, draw]
+    entropy = [seed, *subject_entropy(subject, seed_namespace), variant_index, draw]
     return np.random.default_rng(np.random.SeedSequence(entropy))
 
 

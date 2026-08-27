@@ -99,12 +99,23 @@ Oracle is the per-subject best threshold — the ceiling any thresholding rule c
 |---|---|---|---|---|---|---|---|
 | baseline | 0.963 | 0.957 – 0.969 | 3.69 | 3.45 – 3.95 | 306s | `1df2e5d`† | t1w, `RidgeCV` head |
 | walnut-v0.1 | 0.968 | 0.963 – 0.972 | 3.50 | 3.29 – 3.74 | 261s | `ead1264` | vitl/sub-52k checkpoint, baseline otherwise |
+| zero masking | 0.969 | 0.964 – 0.973 | 3.45 | 3.23 – 3.68 | 4s | `a54f1d4` | + `data > 0` token mask, final block, one view per subject |
+| train views | 0.965 | 0.959 – 0.970 | 3.60 | 3.36 – 3.86 | 7s | `a54f1d4` | + fit on corrupted views of each subject — the current default |
 
 **CamCAN OOD transfer**
 
 | Run | Pearson r | 95% CI | MAE (y) | 95% CI | Time | Git | Notes |
 |---|---|---|---|---|---|---|---|
 | baseline | 0.453 | 0.385 – 0.516 | 29.33 | 27.89 – 30.86 | 431s | `a66ed36`-dirty | head fit on all 494 |
+| + SynthSeg strip | 0.947 | — | 5.43 | — | — | `a54f1d4` | the gap was a skull-strip mismatch |
+
+**CamCAN under corrupted input**, r / MAE, head fit on all 494. `experiments/task3_perturb`.
+
+| Train views | clean | thick slice 5mm | acquired at 2mm | random scale |
+|---|---|---|---|---|
+| clean only | 0.947 / **5.43** | 0.919 / 9.32 | 0.928 / 7.90 | 0.884 / 8.13 |
+| + resolution | 0.942 / 6.14 | 0.942 / **5.66** | 0.941 / **6.16** | 0.908 / 7.47 |
+| + resolution + scale | 0.946 / 5.99 | 0.945 / 5.67 | 0.943 / 6.54 | 0.945 / **6.04** |
 
 ### Task 4 — trigeminal, mean Dice over the two labels, LOO over 40
 
