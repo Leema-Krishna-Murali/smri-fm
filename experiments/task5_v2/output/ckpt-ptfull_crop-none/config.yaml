@@ -1,0 +1,9 @@
+task: task5
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+output_root: experiments/task5_v2/output
+name: ckpt-ptfull_crop-none
+device: cuda
+seed: 4466
+masking: zero
+crop_ap: false
+crop_test_ap: false

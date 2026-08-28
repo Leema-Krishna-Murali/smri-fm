@@ -6,7 +6,8 @@ From: python:3.11-slim
 # pointing apptainer at this file.
 #
 # Versions are pinned to the training environment: numpy, scikit-learn and joblib because they
-# unpickle `head.joblib`, torch because that is what the checkpoint was written by.
+# unpickle `head.joblib`, torch because that is what the checkpoint was written by, scipy because
+# task 3's augmentation resamples with it at predict time.
 
 %files
     fomo_tune /app/fomo_tune
@@ -24,8 +25,19 @@ From: python:3.11-slim
         timm==1.0.27 \
         huggingface-hub==0.36.2 \
         scikit-learn==1.8.0 \
+        scipy==1.17.1 \
         joblib==1.5.3 \
-        omegaconf==2.3.0
+        omegaconf==2.3.0 \
+        h5py==3.16.0 \
+        platformdirs==4.10.0
+
+    # pinned to the third_party/SynthSeg submodule; --no-deps keeps the reference
+    # implementation's matplotlib out, and a tarball needs no git in the image
+    pip install --no-cache-dir --no-deps \
+        "SynthSeg @ https://github.com/MedARC-AI/SynthSeg/archive/2690d9ac9ae28323d03043406cd21db0a8741547.tar.gz"
+
+%environment
+    export SYNTHSEG_WEIGHTS=/app/model/synthseg.h5
 
 %runscript
     exec python /app/predict.py "$@"

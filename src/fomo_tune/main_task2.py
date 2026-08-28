@@ -1,19 +1,21 @@
 """FOMO task 2: meningioma segmentation, scored by per-subject Dice as the challenge scores it.
 
 **`Task2Method` is what we tune.** Today: a frozen sMRI MAE over flair, one token per 8mm patch,
-and a logistic head predicting each patch's tumour fraction. `predict_proba` returns that fraction
-as a volume on the input's own grid; the method does not decide where to cut it.
+and nine progressive convolutional heads restoring the 1mm grid. The heads form a CAPI-style
+hyperparameter grid trained on the same crops; `predict_proba` returns their uniform average as a
+volume on the input's own grid, and the method does not decide where to cut it.
 
 **The protocol is held fixed**, or scores stop being comparable across iterations: leave one
 subject out, Dice at every threshold in a fixed grid, then the single cut maximizing mean Dice
 over the out-of-fold subjects. That cut is tuned on the subjects it is then scored on, so the
 number is somewhat inflated -- as is anything else tuned by re-running and reading it.
 
-`train` runs the protocol then fits and saves a head; `predict` is the challenge contract. Both go
-through `Task2Method.predict_proba`, so every fold exercises the path the submission runs.
+`train` runs the protocol then fits and saves the heads; `predict` is the challenge contract. Both
+go through `Task2Method.predict_proba`, so every fold exercises the path the submission runs.
 """
 
 import argparse
+import itertools
 import json
 import logging
 import time
@@ -21,16 +23,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
-import joblib
 import nibabel as nib
 import numpy as np
 import torch
-from einops import reduce, repeat
+import torch.nn as nn
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 from scipy import ndimage
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline, make_pipeline
-from sklearn.preprocessing import StandardScaler
 
 from fomo_tune.backbone import load_backbone
 from fomo_tune.utils import git_sha, set_seed, setup_logging
@@ -43,14 +42,24 @@ Images = dict[str, nib.Nifti1Image]
 @dataclass
 class Config:
     task: str = "task2"
-    ckpt_path: str = "hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth"
+    ckpt_path: str = "hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth"
     modality: str = "flair"
     output_root: str = "output/fomo_tune"
     name: str = "task2"
-    inverse_reg: float = 1.0
     largest_component: bool = True
     device: str = "cuda"
     seed: int = 4466
+
+
+# CAPI trains a Cartesian grid of heads in one module and optimizer. Positive weight is the
+# task-specific second axis here; the remaining training recipe is shared by every candidate.
+RECIPES = tuple(itertools.product((1e-3, 2e-3, 4e-3), (10.0, 20.0, 40.0)))
+CORE_TOKENS = 8
+HALO_TOKENS = 2
+BATCH_SIZE = 4
+STEPS = 300
+EMA_START = 100
+EMA_DECAY = 0.99
 
 
 # ---- geometry -----------------------------------------------------------------------------
@@ -77,31 +86,44 @@ def resample_nearest(
 
 
 class Patches(NamedTuple):
-    """One subject's kept patches, plus the tumour-voxel count of every patch on the grid."""
+    """One subject's dense token and label grids, sampling locations, and token statistics."""
 
-    features: np.ndarray  # (n_kept, dim)
-    patch_ids: np.ndarray  # (n_kept,) indices into the flattened patch grid
-    counts: np.ndarray  # (n_patches,)
+    tokens: np.ndarray
+    kept: np.ndarray
+    seg: np.ndarray
+    positive: np.ndarray
+    brain_tokens: np.ndarray
+    sum: np.ndarray
+    square: np.ndarray
+    count: int
 
 
-def fit_head(features: np.ndarray, counts: np.ndarray, voxels: int, inverse_reg: float) -> Pipeline:
-    """Voxel-level logistic regression, each patch collapsed to one positive and one negative row.
+class ProgressiveDecoder(nn.Module):
+    """Three 2x upsampling stages turn the final 8mm token grid into 1mm voxel logits."""
 
-    Unbalanced on purpose: the fitted probability is then the patch's tumour fraction.
-    """
-    has_tumour = counts > 0
-    rows = np.concatenate([features, features[has_tumour]])
-    labels = np.concatenate([np.zeros(len(features)), np.ones(has_tumour.sum())])
-    weights = np.concatenate([voxels - counts, counts[has_tumour]])
+    def __init__(self):
+        super().__init__()
+        self.projection = nn.Conv3d(1024, 32, 1)
+        self.convolutions = nn.ModuleList(
+            [
+                nn.Conv3d(32, 16, 3, padding=1),
+                nn.Conv3d(16, 8, 3, padding=1),
+                nn.Conv3d(8, 4, 3, padding=1),
+            ]
+        )
+        self.output = nn.Conv3d(4, 1, 3, padding=1)
+        nn.init.constant_(self.output.bias, -4.0)
 
-    keep = weights > 0
-    head = make_pipeline(StandardScaler(), LogisticRegression(C=inverse_reg, max_iter=1000))
-    head.fit(rows[keep], labels[keep], logisticregression__sample_weight=weights[keep])
-    return head
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        x = F.gelu(self.projection(tokens))
+        for convolution in self.convolutions:
+            x = F.interpolate(x, scale_factor=2, mode="trilinear", align_corners=False)
+            x = F.gelu(convolution(x))
+        return self.output(x)
 
 
 class Task2Method:
-    """Frozen sMRI MAE, per-patch tokens, logistic head on the patch tumour fraction."""
+    """Frozen FLAIR tokens and a uniformly averaged grid of progressive CNN decoders."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -114,10 +136,12 @@ class Task2Method:
         self.grid_size = tuple(patchify.grid_size)
         self.patch_size = tuple(patchify.patch_size)
         self.img_size = tuple(patchify.img_size)
-        self.voxels_per_patch = int(np.prod(self.patch_size))
+        assert self.patch_size == (8, 8, 8)
 
         self.cache: dict[str, Patches] = {}
         self.head = None
+        self.mean = None
+        self.inverse_std = None
         self.threshold = None
 
     @torch.inference_mode()
@@ -134,51 +158,147 @@ class Task2Method:
         patch_ids = out["patch_ids"][0][keep].cpu().numpy()
         return features, patch_ids, sample["affine"].numpy()
 
-    def patch_counts(self, seg: nib.Nifti1Image, grid_affine: np.ndarray) -> np.ndarray:
-        """Tumour voxels per patch, over the whole grid, in the encoder's flattened order."""
-        seg = repack(seg)
-        labels = np.asarray(seg.dataobj, dtype=np.float32).round()
-        on_grid = resample_nearest(labels, seg.affine, grid_affine, self.img_size)
-        px, py, pz = self.patch_size
-        return reduce(on_grid, "(gx px) (gy py) (gz pz) -> (gx gy gz)", "sum", px=px, py=py, pz=pz)
-
     def cached_patches(self, row: dict) -> Patches:
-        """Cached: leave-one-out revisits every subject n times."""
+        """Dense token/label grids cached because leave-one-out revisits every subject."""
         if row["subject"] not in self.cache:
             features, patch_ids, grid_affine = self.embed(row)
-            counts = self.patch_counts(row["seg"], grid_affine)
-            self.cache[row["subject"]] = Patches(features, patch_ids, counts)
+            dense = np.zeros((int(np.prod(self.grid_size)), 1024), dtype=np.float16)
+            dense[patch_ids] = features.astype(np.float16)
+            dense = np.moveaxis(dense.reshape(*self.grid_size, 1024), -1, 0)
+            kept = np.zeros(int(np.prod(self.grid_size)), dtype=bool)
+            kept[patch_ids] = True
+            kept = kept.reshape(self.grid_size)[None]
+
+            seg = repack(row["seg"])
+            labels = np.asarray(seg.dataobj, dtype=np.float32).round()
+            labels = resample_nearest(labels, seg.affine, grid_affine, self.img_size) > 0
+            self.cache[row["subject"]] = Patches(
+                np.pad(dense, ((0, 0),) + ((HALO_TOKENS, HALO_TOKENS),) * 3),
+                np.pad(kept, ((0, 0),) + ((HALO_TOKENS, HALO_TOKENS),) * 3),
+                labels,
+                np.argwhere(labels),
+                np.argwhere(kept[0]),
+                features.sum(0, dtype=np.float64),
+                np.square(features, dtype=np.float64).sum(0),
+                len(features),
+            )
         return self.cache[row["subject"]]
 
-    def fit(self, rows: list[dict]) -> None:
+    def fit(self, rows: list[dict], seed: int) -> None:
+        """Fit the entire decoder grid on one shared stream of balanced spatial crops."""
         subjects = [self.cached_patches(row) for row in rows]
-        features = np.concatenate([subject.features for subject in subjects])
-        counts = np.concatenate([subject.counts[subject.patch_ids] for subject in subjects])
-        self.head = fit_head(features, counts, self.voxels_per_patch, self.cfg.inverse_reg)
+        count = sum(subject.count for subject in subjects)
+        total = sum((subject.sum for subject in subjects), start=np.zeros(1024))
+        square = sum((subject.square for subject in subjects), start=np.zeros(1024))
+        mean = total / count
+        variance = square / count - np.square(mean)
+        self.mean = torch.from_numpy(mean.astype(np.float32)).to(self.device)[
+            None, :, None, None, None
+        ]
+        self.inverse_std = torch.from_numpy(
+            np.maximum(variance, 1e-6).astype(np.float32) ** -0.5
+        ).to(self.device)[None, :, None, None, None]
+
+        torch.manual_seed(seed)
+        rng = np.random.default_rng(seed)
+        self.head = nn.ModuleList([ProgressiveDecoder() for _ in RECIPES]).to(self.device)
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": list(head.parameters()), "lr": learning_rate}
+                for head, (learning_rate, _) in zip(self.head, RECIPES)
+            ],
+            lr=0.0,
+            weight_decay=1e-4,
+        )
+        ema = None
+        for step in range(STEPS):
+            token_crops, kept_crops, targets = [], [], []
+            for batch_index in range(BATCH_SIZE):
+                subject = subjects[(step * BATCH_SIZE + batch_index) % len(subjects)]
+                if batch_index < BATCH_SIZE // 2:
+                    center = subject.positive[rng.integers(len(subject.positive))] // 8
+                else:
+                    center = subject.brain_tokens[rng.integers(len(subject.brain_tokens))]
+                origin = np.clip(
+                    center - rng.integers(1, CORE_TOKENS, size=3),
+                    0,
+                    np.asarray(self.grid_size) - CORE_TOKENS,
+                )
+                ox, oy, oz = (int(value) for value in origin)
+                width = CORE_TOKENS + 2 * HALO_TOKENS
+                token_crops.append(
+                    subject.tokens[:, ox : ox + width, oy : oy + width, oz : oz + width]
+                )
+                kept_crops.append(
+                    subject.kept[:, ox : ox + width, oy : oy + width, oz : oz + width]
+                )
+                x, y, z = ox * 8, oy * 8, oz * 8
+                voxels = CORE_TOKENS * 8
+                targets.append(subject.seg[None, x : x + voxels, y : y + voxels, z : z + voxels])
+
+            tokens = torch.from_numpy(np.stack(token_crops)).to(self.device, dtype=torch.float32)
+            kept = torch.from_numpy(np.stack(kept_crops)).to(self.device)
+            target = torch.from_numpy(np.stack(targets)).to(self.device, dtype=torch.float32)
+            inputs = (tokens - self.mean) * self.inverse_std * kept
+
+            optimizer.zero_grad(set_to_none=True)
+            for head, (_, positive_weight) in zip(self.head, RECIPES):
+                with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
+                    halo = HALO_TOKENS * 8
+                    logits = head(inputs)[:, :, halo:-halo, halo:-halo, halo:-halo]
+                    bce = F.binary_cross_entropy_with_logits(
+                        logits, target, pos_weight=torch.tensor(positive_weight, device=self.device)
+                    )
+                    probability = torch.sigmoid(logits)
+                    dims = (1, 2, 3, 4)
+                    dice = (2 * (probability * target).sum(dims) + 1) / (
+                        probability.sum(dims) + target.sum(dims) + 1
+                    )
+                    loss = bce + 1 - dice.mean()
+                loss.backward()
+            optimizer.step()
+
+            if step == EMA_START:
+                ema = [
+                    [parameter.detach().clone() for parameter in head.parameters()]
+                    for head in self.head
+                ]
+            elif step > EMA_START:
+                for averages, head in zip(ema, self.head):
+                    for average, parameter in zip(averages, head.parameters()):
+                        average.lerp_(parameter.detach(), 1 - EMA_DECAY)
+
+        with torch.no_grad():
+            for averages, head in zip(ema, self.head):
+                for parameter, average in zip(head.parameters(), averages):
+                    parameter.copy_(average)
+        self.head.eval()
 
     def predict_proba(self, images: Images) -> nib.Nifti1Image:
-        """Tumour probability per voxel on the input's own grid, constant within each patch."""
-        features, patch_ids, grid_affine = self.embed(images)
+        """Uniformly averaged voxel probabilities on the input image's native grid."""
+        sparse, patch_ids, grid_affine = self.embed(images)
+        dense = np.zeros((int(np.prod(self.grid_size)), 1024), dtype=np.float32)
+        dense[patch_ids] = sparse
+        tokens = torch.from_numpy(
+            np.moveaxis(dense.reshape(*self.grid_size, 1024), -1, 0)[None]
+        ).to(self.device)
+        kept = np.zeros(int(np.prod(self.grid_size)), dtype=bool)
+        kept[patch_ids] = True
+        kept = torch.from_numpy(kept.reshape(1, 1, *self.grid_size)).to(self.device)
+        inputs = (tokens - self.mean) * self.inverse_std * kept
 
-        # zero where the encoder kept no token, which is a patch with no in-brain voxel
-        fractions = np.zeros(int(np.prod(self.grid_size)), dtype=np.float32)
-        fractions[patch_ids] = self.head.predict_proba(features)[:, 1]
-
-        gx, gy, gz = self.grid_size
-        px, py, pz = self.patch_size
-        on_grid = repeat(
-            fractions,
-            "(gx gy gz) -> (gx px) (gy py) (gz pz)",
-            gx=gx,
-            gy=gy,
-            gz=gz,
-            px=px,
-            py=py,
-            pz=pz,
-        )
+        probability = torch.zeros(self.img_size, device=self.device)
+        with (
+            torch.inference_mode(),
+            torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"),
+        ):
+            for head in self.head:
+                probability += torch.sigmoid(head(inputs)[0, 0].float()) / len(self.head)
 
         image = repack(images[self.modality])
-        on_input = resample_nearest(on_grid, grid_affine, image.affine, image.shape)
+        on_input = resample_nearest(
+            probability.cpu().numpy(), grid_affine, image.affine, image.shape
+        )
         return nib.Nifti1Image(on_input, image.affine)
 
     def binarize(self, probabilities: np.ndarray, threshold: float) -> np.ndarray:
@@ -200,10 +320,18 @@ class Task2Method:
         return nib.Nifti1Image(mask.astype(np.uint8), probabilities.affine)
 
     def save(self, model_dir: Path) -> None:
-        """Config, head and threshold; the weights stay wherever `ckpt_path` points."""
+        """Config, head and threshold; the backbone weights stay wherever `ckpt_path` points."""
         model_dir.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(self.cfg, model_dir / "config.yaml")
-        joblib.dump({"head": self.head, "threshold": self.threshold}, model_dir / "head.joblib")
+        torch.save(
+            {
+                "head": self.head.state_dict(),
+                "mean": self.mean.cpu(),
+                "inverse_std": self.inverse_std.cpu(),
+                "threshold": self.threshold,
+            },
+            model_dir / "head.pt",
+        )
 
     @classmethod
     def load(cls, model_dir: Path, **overrides) -> "Task2Method":
@@ -212,8 +340,13 @@ class Task2Method:
             OmegaConf.structured(Config), OmegaConf.load(model_dir / "config.yaml"), overrides
         )
         method = cls(cfg)
-        state = joblib.load(model_dir / "head.joblib")
-        method.head, method.threshold = state["head"], state["threshold"]
+        state = torch.load(model_dir / "head.pt", map_location=method.device, weights_only=True)
+        method.head = nn.ModuleList([ProgressiveDecoder() for _ in RECIPES]).to(method.device)
+        method.head.load_state_dict(state["head"])
+        method.head.eval()
+        method.mean = state["mean"].to(method.device)
+        method.inverse_std = state["inverse_std"].to(method.device)
+        method.threshold = state["threshold"]
         return method
 
 
@@ -223,7 +356,7 @@ class Task2Method:
 # challenge hands over all the modalities whether or not a model uses them.
 IMAGE_COLS = ("dwi_b1000", "flair")
 
-# Probabilities sit near the 2.4e-4 voxel prevalence, so the grid is geometric rather than linear.
+# Keep the baseline protocol's geometric threshold grid.
 THRESHOLDS = np.logspace(-6, -0.3, 60)
 
 
@@ -255,11 +388,14 @@ def subject_curves(
 
 
 def leave_one_out(rows: list[dict], method: Task2Method) -> Curves:
-    """Every subject's threshold curves, predicted by a head fit on the other n-1."""
+    """Every subject's threshold curves, predicted by heads fit on the other n-1."""
     dice, predicted, true = [], [], []
     start = time.perf_counter()
-    for row in rows:
-        method.fit([r for r in rows if r["subject"] != row["subject"]])
+    for held_out, row in enumerate(rows):
+        method.fit(
+            [r for r in rows if r["subject"] != row["subject"]],
+            method.cfg.seed + held_out,
+        )
 
         probabilities = method.predict_proba({key: row[key] for key in IMAGE_COLS})
         truth = np.asarray(repack(row["seg"]).dataobj).round() > 0
@@ -331,7 +467,7 @@ def train(args: argparse.Namespace) -> None:
     summary = score(curves)
 
     # the shipped model sees all n subjects, so it is not any of the models scored above
-    method.fit(rows)
+    method.fit(rows, cfg.seed + len(rows))
     method.threshold = summary["threshold"]
     method.save(run_dir / "model")
 

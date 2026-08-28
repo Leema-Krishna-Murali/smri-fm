@@ -25,9 +25,10 @@ dependencies = [
     "pytest",
     "pyyaml",
     "s3fs",
-    "scikit-learn",
+    "scikit-learn==1.8.0",
     "scipy",
     "seaborn",
+    "SynthSeg",
     "tabulate",
     "templateflow",
     "timm",
@@ -38,6 +39,9 @@ dependencies = [
     "webdataset",
 ]
 
+
+[tool.uv.sources]
+SynthSeg = { git = "https://github.com/MedARC-AI/SynthSeg.git", rev = "2690d9ac9ae28323d03043406cd21db0a8741547" }
 
 [tool.setuptools_scm]
 version_file = "src/_version.py"

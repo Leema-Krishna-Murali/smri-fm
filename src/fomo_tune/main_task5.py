@@ -39,25 +39,50 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from SynthSeg_pytorch import SynthSegPredictor
 
-from fomo_tune.backbone import load_backbone
+import fomo_tune.synthseg as synthseg
+from fomo_tune.backbone import SmriMaeTransform, load_backbone
 from fomo_tune.utils import git_sha, set_seed, setup_logging
 
 logger = logging.getLogger("fomo_tune")
 
 Images = dict[str, nib.Nifti1Image]
 
-TARGET_AP_MM = 133.0
-CSF_LABEL = 24  # SynthSeg's extracerebral CSF label
+# The cohort's controls are clipped and its cases are not, which scores AUROC 0.997 by
+# itself. 133mm is the smallest extent any subject covers.
+AP_EXTENT_MM = 133.0
 
 
 @dataclass
 class Config:
     task: str = "task5"
-    ckpt_path: str = "hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth"
+    ckpt_path: str = "hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth"
     output_root: str = "output/fomo_tune"
     name: str = "task5"
     device: str = "cuda"
     seed: int = 4466
+    masking: str = "zero"
+    crop_ap: bool = True
+    crop_test_ap: bool = True
+
+
+def crop_ap(img: nib.Nifti1Image, extent_mm: float) -> nib.Nifti1Image:
+    """Cut a fixed anterior-posterior slab centred on the brain's own AP extent."""
+    img = nib.Nifti1Image(img.dataobj, img.affine, img.header)
+    img = nib.as_closest_canonical(nib.funcs.squeeze_image(img))
+    data = img.get_fdata(dtype=np.float32)
+    zoom = img.header.get_zooms()[1]
+
+    live = np.flatnonzero((data > 0).sum(axis=(0, 2)))
+    extent = round(extent_mm / zoom)
+    start = round((live[0] + live[-1] - extent) / 2)
+    lo, hi = max(start, 0), min(start + extent, data.shape[1])
+
+    # zeros wherever the window runs past the scan, so the slab is `extent` wide for everyone
+    cropped = np.zeros((data.shape[0], extent, data.shape[2]), dtype=np.float32)
+    cropped[:, lo - start : hi - start] = data[:, lo:hi]
+    step = np.eye(4)
+    step[1, 3] = start
+    return nib.Nifti1Image(cropped, img.affine @ step)
 
 
 # ---- method: the part we tune -----------------------------------------------------------
@@ -81,7 +106,11 @@ class Task5Method:
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.backbone, self.transform = load_backbone(cfg.ckpt_path)
+        self.backbone, transform = load_backbone(cfg.ckpt_path)
+        # using zero masking now that data are synthseg masked
+        self.transform = SmriMaeTransform(
+            img_size=transform.img_size, spacing=transform.spacing, masking=cfg.masking
+        )
         self.device = torch.device(cfg.device)
         self.backbone.to(self.device).eval().requires_grad_(False)
         self.cache: dict[str, np.ndarray] = {}
@@ -129,8 +158,11 @@ class Task5Method:
     @torch.inference_mode()
     def features(self, images: Images) -> np.ndarray:
         """(D,) per subject. A pure function of the images, so training and inference agree."""
-        prepped = self._strip_and_crop(images["t1w"])
-        sample = self.transform(prepped)
+        img = images["t1w"]
+        if self.cfg.crop_ap:
+            img = crop_ap(img, AP_EXTENT_MM)
+
+        sample = self.transform(img)
         batch = {key: value[None].to(self.device) for key, value in sample.items()}
 
         with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
@@ -197,7 +229,11 @@ IMAGE_COLS = ("t1w",)
 
 
 def cross_validate(
-    rows: list[dict], method: Task5Method, seed: int = 0, n_folds: int = 20
+    rows: list[dict],
+    method: Task5Method,
+    seed: int = 0,
+    n_folds: int = 20,
+    crop_test_ap: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Out-of-fold score for every subject, each predicted by a head fit on the other folds."""
     y = np.array([row["label"] for row in rows])
@@ -207,7 +243,10 @@ def cross_validate(
     for fold, (train, test) in enumerate(folds.split(rows)):
         method.fit([rows[i] for i in train])
         for i in test:
-            oof[i] = method.predict({key: rows[i][key] for key in IMAGE_COLS})
+            images = {key: rows[i][key] for key in IMAGE_COLS}
+            if crop_test_ap:
+                images = {key: crop_ap(img, AP_EXTENT_MM) for key, img in images.items()}
+            oof[i] = method.predict(images)
         logger.info(
             f"fold {fold + 1}/{n_folds} n={len(test)} y={y[test]} "
             f"p={np.round(oof[test], 3)} ({time.perf_counter() - start:.0f}s)"
@@ -252,12 +291,15 @@ def train(args: argparse.Namespace) -> None:
     logger.info(f"config:\n{OmegaConf.to_yaml(cfg).rstrip()}")
     OmegaConf.save(cfg, run_dir / "config.yaml")
 
-    rows = list(load_fomo_task5())
+    ds = load_fomo_task5()
+    # skullstrip with synthseg, cached with hf
+    ds = synthseg.synthseg_strip_dataset(ds, source="t1w")
+    rows = list(ds)
     logger.info(f"dataset: {len(rows)} subjects, {sum(r['label'] for r in rows)} positive")
 
     method = Task5Method(cfg)
     start = time.perf_counter()
-    y, oof = cross_validate(rows, method)
+    y, oof = cross_validate(rows, method, crop_test_ap=cfg.crop_test_ap)
     run_time = time.perf_counter() - start
     summary = score(y, oof)
 
@@ -288,7 +330,10 @@ def predict(args: argparse.Namespace) -> None:
         overrides["ckpt_path"] = args.ckpt_path
     method = Task5Method.load(args.model_dir, **overrides)
 
-    probability = method.predict({"t1w": nib.load(args.t1)})
+    img = nib.load(args.t1)
+    seg = synthseg.synthseg(img)
+    img = synthseg.applymask(img, seg)
+    probability = method.predict({"t1w": img})
 
     args.output.write_text(f"{probability:.6f}\n")
 

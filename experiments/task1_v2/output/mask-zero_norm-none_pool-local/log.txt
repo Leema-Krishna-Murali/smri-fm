@@ -1,0 +1,39 @@
+14:34:29 run mask-zero_norm-none_pool-local (git 82c3fb9)
+14:34:29 config:
+task: task1
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+modalities:
+- dwi_b1000
+output_root: experiments/task1_v2/output
+name: mask-zero_norm-none_pool-local
+device: cuda
+seed: 4466
+pooling: local
+sweet_k: 8
+top_k: 32
+masking: zero
+normalize_volume: false
+normalize_test_volume: false
+14:34:31 dataset: 21 subjects, 13 positive
+14:34:53 fold 1/21 sub-01 y=1 p=0.133 (15s)
+14:34:59 fold 2/21 sub-02 y=1 p=1.000 (21s)
+14:35:06 fold 3/21 sub-03 y=0 p=0.001 (28s)
+14:35:13 fold 4/21 sub-04 y=1 p=0.501 (34s)
+14:35:18 fold 5/21 sub-05 y=1 p=0.652 (39s)
+14:35:23 fold 6/21 sub-06 y=1 p=0.995 (45s)
+14:35:29 fold 7/21 sub-07 y=0 p=0.053 (51s)
+14:35:35 fold 8/21 sub-08 y=0 p=0.308 (56s)
+14:35:41 fold 9/21 sub-09 y=1 p=0.500 (62s)
+14:35:44 fold 10/21 sub-10 y=1 p=0.469 (66s)
+14:35:49 fold 11/21 sub-11 y=0 p=0.465 (70s)
+14:35:52 fold 12/21 sub-12 y=0 p=0.091 (73s)
+14:35:55 fold 13/21 sub-13 y=1 p=0.826 (76s)
+14:35:58 fold 14/21 sub-14 y=1 p=0.699 (79s)
+14:36:01 fold 15/21 sub-15 y=0 p=0.475 (82s)
+14:36:04 fold 16/21 sub-16 y=0 p=0.249 (85s)
+14:36:08 fold 17/21 sub-17 y=1 p=0.500 (89s)
+14:36:12 fold 18/21 sub-18 y=1 p=0.500 (93s)
+14:36:15 fold 19/21 sub-19 y=1 p=0.502 (96s)
+14:36:18 fold 20/21 sub-20 y=1 p=0.244 (99s)
+14:36:21 fold 21/21 sub-21 y=0 p=0.792 (102s)
+14:36:27 result: auroc=0.8173  auroc_ci_low=0.5865  auroc_ci_high=1.0000  (102s)

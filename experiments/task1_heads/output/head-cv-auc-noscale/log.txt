@@ -1,0 +1,43 @@
+19:21:22 run head-cv-auc-noscale (git 6132025)
+19:21:22 config:
+task: task1
+ckpt_path: hf://medarc/walnut/checkpoints/pretrain_full_90_10_h100/checkpoint-last.pth
+modalities:
+- dwi_b1000
+output_root: experiments/task1_heads/output
+name: head-cv-auc-noscale
+device: cuda
+seed: 4466
+pooling: mean
+sweet_k: 8
+top_k: 32
+masking: zero
+normalize_volume: false
+normalize_test_volume: false
+head: logistic_cv
+head_scoring: roc_auc
+head_C: 1.0
+scaler: false
+19:21:24 dataset: 21 subjects, 13 positive
+19:21:52 fold 1/21 sub-01 y=1 p=0.500 (19s)
+19:22:01 fold 2/21 sub-02 y=1 p=0.500 (28s)
+19:22:12 fold 3/21 sub-03 y=0 p=0.500 (39s)
+19:22:22 fold 4/21 sub-04 y=1 p=0.500 (49s)
+19:22:33 fold 5/21 sub-05 y=1 p=0.500 (60s)
+19:22:42 fold 6/21 sub-06 y=1 p=0.500 (69s)
+19:22:54 fold 7/21 sub-07 y=0 p=0.500 (81s)
+19:23:04 fold 8/21 sub-08 y=0 p=0.500 (91s)
+19:23:14 fold 9/21 sub-09 y=1 p=0.500 (101s)
+19:23:26 fold 10/21 sub-10 y=1 p=0.500 (113s)
+19:23:38 fold 11/21 sub-11 y=0 p=0.237 (125s)
+19:23:46 fold 12/21 sub-12 y=0 p=0.168 (133s)
+19:23:53 fold 13/21 sub-13 y=1 p=0.536 (140s)
+19:23:55 fold 14/21 sub-14 y=1 p=0.500 (142s)
+19:23:56 fold 15/21 sub-15 y=0 p=0.484 (143s)
+19:23:57 fold 16/21 sub-16 y=0 p=0.500 (144s)
+19:23:59 fold 17/21 sub-17 y=1 p=0.598 (146s)
+19:23:59 fold 18/21 sub-18 y=1 p=0.500 (147s)
+19:24:00 fold 19/21 sub-19 y=1 p=0.500 (147s)
+19:24:00 fold 20/21 sub-20 y=1 p=0.742 (148s)
+19:24:01 fold 21/21 sub-21 y=0 p=0.518 (148s)
+19:24:04 result: auroc=0.8558  auroc_ci_low=0.6154  auroc_ci_high=1.0000  (148s)

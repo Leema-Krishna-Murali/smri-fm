@@ -41,6 +41,7 @@ model/
 /checkpoints/
 /output/
 /wandb/
+/cache/
 # a saved fold is a whole model dir, so its config is just the run's config again
 folds/
 
@@ -48,6 +49,7 @@ folds/
 .scratch
 tmp
 .tmp*
+_old/
 
 # AI assistants
 .claude/
