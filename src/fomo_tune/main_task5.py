@@ -7,17 +7,6 @@ out-of-fold predictions, bootstrap subjects for the CI.
 `train` runs that protocol then fits and saves a head; `predict` is the challenge contract, one t1
 path in and one probability out. Both go through `Task5Method.predict`, so every fold exercises
 the path the submission will run.
-
-Updated from previous main_task5.py to close two confounds found in Connor's experiments/explore_fomo_task5/
-README.md:
-
-1. defining FOV for anterior-posterior axis as the controls in the fomo5 data are cropped and the model is biased based on that confound.
-2. `SmriMaeTransform`'s mean-threshold mask keeps skull, scalp and neck.  Pooling over a lot of it badly hurt cross-scanner
-   generalization (train on skyra, test on cigna AUROC 0.533).
-
-Noting that the backbone is pretrained on SynthSeg-stripped volumes.
-`Task5Method` now runs SynthSeg once per subject to skull-strip (brain only, CSF label dropped - extracerebral CSF)
-and crop every subject to a common ~133mm AP extent.
 """
 
 import argparse
@@ -37,7 +26,6 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import KFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-from SynthSeg_pytorch import SynthSegPredictor
 
 import fomo_tune.synthseg as synthseg
 from fomo_tune.backbone import SmriMaeTransform, load_backbone
@@ -87,19 +75,6 @@ def crop_ap(img: nib.Nifti1Image, extent_mm: float) -> nib.Nifti1Image:
 
 # ---- method: the part we tune -----------------------------------------------------------
 
-def _on_grid(seg_img: nib.Nifti1Image, native_img: nib.Nifti1Image) -> np.ndarray:
-    """SynthSeg's (resampled) label map, resampled back onto `native_img`'s grid by nearest
-    neighbour.
-    """
-    seg = np.asarray(seg_img.dataobj)
-    source, target = np.asarray(seg_img.affine), np.asarray(native_img.affine)
-    index = []
-    for axis in range(3):
-        world = target[axis, axis] * np.arange(native_img.shape[axis]) + target[axis, 3]
-        position = (world - source[axis, 3]) / source[axis, axis]
-        index.append(np.clip(np.rint(position).astype(int), 0, seg.shape[axis] - 1))
-    return seg[index[0][:, None, None], index[1][None, :, None], index[2][None, None, :]]
-
 
 class Task5Method:
     """Frozen sMRI MAE, mean-pooled tokens over the t1w, logistic head."""
@@ -115,45 +90,6 @@ class Task5Method:
         self.backbone.to(self.device).eval().requires_grad_(False)
         self.cache: dict[str, np.ndarray] = {}
         self.head = None
-
-    def _strip_and_crop(self, img: nib.Nifti1Image) -> nib.Nifti1Image:
-        """Skull-strip (SynthSeg brain mask, CSF dropped) and crop to the common AP extent.
-
-        Runs on the native acquisition grid, not SynthSeg's own internal resampling grid, so
-        native resolution (0.43-0.77mm in-plane) survives.
-        """
-        native = nib.Nifti1Image(img.dataobj, img.affine, img.header)
-        native = nib.funcs.squeeze_image(native)
-        native = nib.as_closest_canonical(native)
-
-        seg, _, _, seg_affine, seg_header = self.synthseg.segment(native)
-        seg_img = nib.Nifti1Image(seg, seg_affine, seg_header)
-        labels = _on_grid(seg_img, native)
-        brain = (labels > 0) & (labels != CSF_LABEL)
-
-        data = native.get_fdata(dtype=np.float32)
-        affine = np.asarray(native.affine, dtype=np.float64)
-        vox_ap = float(native.header.get_zooms()[1])
-        stripped = np.where(brain, data, 0.0)
-
-        ap_profile = brain.sum(axis=(0, 2))
-        ap_slice_ind_brain = np.flatnonzero(ap_profile)
-        if ap_slice_ind_brain.size == 0:
-            # SynthSeg found no brain. Fall back to the stripped volume, uncropped.
-            logger.warning("no brain found by SynthSeg; skipping the AP crop for this subject")
-            return nib.Nifti1Image(stripped, affine, native.header)
-
-        center = (ap_slice_ind_brain[0] + ap_slice_ind_brain[-1]) / 2
-        half_vox = TARGET_AP_MM / 2 / vox_ap
-        low = max(int(round(center - half_vox)), 0)
-        high = min(int(round(center + half_vox)), data.shape[1])
-
-        cropped = stripped[:, low:high, :]
-        new_affine = affine.copy()
-        new_affine[:, 3] = affine[:, 3] + affine[:, 1] * low
-
-        return nib.Nifti1Image(cropped.astype(np.float32), new_affine, native.header)
-
 
     @torch.inference_mode()
     def features(self, images: Images) -> np.ndarray:
