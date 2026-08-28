@@ -7,6 +7,11 @@ out-of-fold predictions, bootstrap subjects for the CI.
 `train` runs that protocol then fits and saves a head; `predict` is the challenge contract, one t1
 path in and one probability out. Both go through `Task5Method.predict`, so every fold exercises
 the path the submission will run.
+
+Same protocol as main_task5.py, but `features` restricts pooling to tokens whose falls in
+cortex (SynthSeg labels 3/42) instead of the whole brain. Validated separately at standard
+20-fold AUROC ~0.95 (ap crop for train and test), Skyra->Cigna 0.92, Cigna->Skyra 0.81, with Skyra->Cigna above whole-brain
+mean pooling (0.53) but lower for Cigna->Skyra (0.87).
 """
 
 import argparse
@@ -38,6 +43,7 @@ Images = dict[str, nib.Nifti1Image]
 # The cohort's controls are clipped and its cases are not, which scores AUROC 0.997 by
 # itself. 133mm is the smallest extent any subject covers.
 AP_EXTENT_MM = 133.0
+CORTEX = (3, 42)  # SynthSeg's left/right cerebral cortex labels
 
 
 @dataclass
@@ -45,7 +51,7 @@ class Config:
     task: str = "task5"
     ckpt_path: str = "hf://medarc/walnut/checkpoints/walnut-v0-1/vitl/sub-52k/checkpoint-last.pth"
     output_root: str = "output/fomo_tune"
-    name: str = "task5"
+    name: str = "task5_cortex"
     device: str = "cuda"
     seed: int = 4466
     masking: str = "zero"
@@ -77,7 +83,7 @@ def crop_ap(img: nib.Nifti1Image, extent_mm: float) -> nib.Nifti1Image:
 
 
 class Task5Method:
-    """Frozen sMRI MAE, mean-pooled tokens over the t1w, logistic head."""
+    """Frozen sMRI MAE, mean-pooled cortex tokens over the t1w, logistic head."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -88,15 +94,19 @@ class Task5Method:
         )
         self.device = torch.device(cfg.device)
         self.backbone.to(self.device).eval().requires_grad_(False)
+        patchify = self.backbone.encoder.patchify
+        self.grid_size = tuple(patchify.grid_size)
+        self.patch_size = tuple(patchify.patch_size)
         self.cache: dict[str, np.ndarray] = {}
         self.head = None
 
     @torch.inference_mode()
     def features(self, images: Images) -> np.ndarray:
         """(D,) per subject. A pure function of the images, so training and inference agree."""
-        img = images["t1w"]
+        img, seg = images["t1w"], images["synthseg"]
         if self.cfg.crop_ap:
             img = crop_ap(img, AP_EXTENT_MM)
+            seg = crop_ap(seg, AP_EXTENT_MM)
 
         sample = self.transform(img)
         batch = {key: value[None].to(self.device) for key, value in sample.items()}
@@ -104,8 +114,16 @@ class Task5Method:
         with torch.autocast("cuda", torch.bfloat16, enabled=self.device.type == "cuda"):
             out = self.backbone(batch)
 
+        cortex, _ = self.transform.resize(seg, mode="nearest-exact")
+        gx, gy, gz = self.grid_size
+        px, py, pz = self.patch_size
+        is_cortex_grid = (cortex == CORTEX[0]) | (cortex == CORTEX[1])
+        is_cortex_grid = is_cortex_grid.reshape(gx, px, gy, py, gz, pz).any(dim=(1, 3, 5)).reshape(-1)
+        is_cortex = is_cortex_grid.numpy()[out["patch_ids"][0].cpu().numpy()]
+        is_cortex = torch.from_numpy(is_cortex).to(self.device)[None]
+
         patch_embeds = out["patch_embeds"]
-        token_mask = out["token_mask"].bool().unsqueeze(-1)
+        token_mask = (out["token_mask"].bool() & is_cortex).unsqueeze(-1)
         embed = (patch_embeds * token_mask).sum(dim=1) / token_mask.sum(dim=1)
         return embed[0].float().cpu().numpy()
 
@@ -161,7 +179,7 @@ class Task5Method:
 
 # Every image the task ships. The method picks which of them it wants, as at inference, where the
 # challenge hands over the modalities whether or not a model uses them.
-IMAGE_COLS = ("t1w",)
+IMAGE_COLS = ("t1w", "synthseg")
 
 
 def cross_validate(
@@ -228,7 +246,7 @@ def train(args: argparse.Namespace) -> None:
     OmegaConf.save(cfg, run_dir / "config.yaml")
 
     ds = load_fomo_task5()
-    # skullstrip with synthseg, cached with hf
+    # skullstrip with synthseg, cached with hf (keeps the label map too, as a "synthseg" column)
     ds = synthseg.synthseg_strip_dataset(ds, source="t1w")
     rows = list(ds)
     logger.info(f"dataset: {len(rows)} subjects, {sum(r['label'] for r in rows)} positive")
@@ -269,7 +287,7 @@ def predict(args: argparse.Namespace) -> None:
     img = nib.load(args.t1)
     seg = synthseg.synthseg(img)
     img = synthseg.applymask(img, seg)
-    probability = method.predict({"t1w": img})
+    probability = method.predict({"t1w": img, "synthseg": seg})
 
     args.output.write_text(f"{probability:.6f}\n")
 
