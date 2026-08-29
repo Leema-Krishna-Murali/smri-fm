@@ -55,8 +55,8 @@ class Config:
     masking: str = "zero"
     crop_ap: bool = True
     crop_test_ap: bool = True
-    pooling: str = "global"
-    cortex_frac: float = 0.0
+    pooling: str = "cortex"
+    cortex_frac: float = 0.1
 
 
 def ap_window(img: nib.Nifti1Image, extent_mm: float) -> tuple[int, int]:
